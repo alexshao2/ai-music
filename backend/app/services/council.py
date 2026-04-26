@@ -278,17 +278,41 @@ def compose(brief: Brief, *, refine: bool = True) -> SongDraft:
 def _compose_with_llm(brief: Brief, *, refine: bool = True) -> SongDraft:
     contributions: dict[str, dict[str, Any]] = {}
     council_log: list[CouncilTurn] = []
+    stub_fallback = _compose_stub(brief)
+    stub_contributions = _stub_contributions_by_role(stub_fallback)
 
+    succeeded_count = 0
     for persona in COUNCIL_PERSONAS:
-        result = _run_persona(persona, brief, council_log, contributions)
-        contributions[persona.role] = result["contributions"]
-        council_log.append(
-            CouncilTurn(
-                persona=persona.name,
-                role=persona.role,
-                message=result["message"].strip(),
+        result = _run_persona_with_retry(persona, brief, council_log, contributions)
+        if result is not None:
+            contributions[persona.role] = result["contributions"]
+            council_log.append(
+                CouncilTurn(
+                    persona=persona.name,
+                    role=persona.role,
+                    message=result["message"].strip(),
+                )
             )
-        )
+            succeeded_count += 1
+        else:
+            # All retries failed — keep the council moving with a deterministic
+            # contribution so later personas still produce real LLM output instead
+            # of the entire compose collapsing to stub.
+            contributions[persona.role] = stub_contributions.get(persona.role, {})
+            council_log.append(
+                CouncilTurn(
+                    persona=persona.name,
+                    role=persona.role,
+                    message=(
+                        f"[{persona.name}: LLM call failed after retries; deterministic "
+                        f"defaults used so the rest of the council can continue.]"
+                    ),
+                )
+            )
+
+    if succeeded_count == 0:
+        # Nothing real came out of the LLM — fall back wholesale.
+        raise RuntimeError("Every council persona failed; falling back to stub.")
 
     if not refine:
         return _assemble_draft(brief, contributions, council_log)
@@ -347,6 +371,73 @@ def _format_contributions(c: dict[str, Any]) -> str:
     import json as _j
 
     return _j.dumps(c, ensure_ascii=False, indent=2)
+
+
+def _run_persona_with_retry(
+    persona: Persona,
+    brief: Brief,
+    prior_turns: list[CouncilTurn],
+    prior_contributions: dict[str, Any],
+    *,
+    max_attempts: int = 2,
+) -> dict[str, Any] | None:
+    """Run a persona's turn, retrying once on transient failures.
+
+    Returns the persona's structured response, or ``None`` if every attempt
+    failed (caller decides whether to substitute a stub for that persona or
+    abandon the LLM compose entirely).
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _run_persona(persona, brief, prior_turns, prior_contributions)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            log.warning(
+                "Persona %s failed on attempt %d/%d: %s",
+                persona.role,
+                attempt,
+                max_attempts,
+                exc,
+            )
+    log.error("Persona %s gave up after %d attempts: %s", persona.role, max_attempts, last_exc)
+    return None
+
+
+def _stub_contributions_by_role(stub_draft: SongDraft) -> dict[str, dict[str, Any]]:
+    """Reverse the stub draft into per-persona contributions.
+
+    Used to fill in for personas whose LLM calls failed, so other personas can
+    still produce real LLM output. Each shape mirrors what ``_run_persona``
+    returns for that role.
+    """
+    return {
+        "theorist": {
+            "key": stub_draft.key,
+            "tempo_bpm": stub_draft.tempo_bpm,
+            "structure": [s.model_dump() for s in stub_draft.structure],
+        },
+        "composer": {
+            "melodic_motifs": [],
+            "vocal_range": {},
+            "harmonic_choices": [],
+        },
+        "lyricist": {"lyrics": dict(stub_draft.lyrics)},
+        "arranger": {
+            "instruments": list(stub_draft.arrangement.get("instruments", [])),
+            "dynamics_curve": stub_draft.arrangement.get(
+                "dynamics_curve", stub_draft.arrangement.get("dynamics", "")
+            ),
+        },
+        "producer": {
+            "sound_palette": stub_draft.production.get(
+                "sound_palette", stub_draft.production.get("palette", "")
+            ),
+            "references": [],
+            "suno_style_tags": [],
+        },
+        "critic": {"notes": [], "score": 0},
+    }
 
 
 def _run_persona(

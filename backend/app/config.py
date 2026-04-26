@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     llm_temperature: float = 0.7
     llm_max_tokens: int = 1500
-    llm_timeout_sec: float = 90.0
+    llm_timeout_sec: float = 180.0
 
     # Legacy fallbacks (still respected so older .env files keep working).
     openai_api_key: str | None = None
