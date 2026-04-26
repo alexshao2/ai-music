@@ -23,6 +23,14 @@ export type Section = {
   notes?: string | null;
 };
 
+export type SunoOutput = {
+  title: string;
+  style: string;
+  lyrics: string;
+  negative_tags: string[];
+  producer_brief: string;
+};
+
 export type SongDraft = {
   id: string;
   title: string;
@@ -31,10 +39,13 @@ export type SongDraft = {
   tempo_bpm: number;
   structure: Section[];
   lyrics: Record<string, string>;
+  lyrics_with_markers: Record<string, string>;
   arrangement: Record<string, unknown>;
   production: Record<string, unknown>;
   council_log: CouncilTurn[];
   suno_prompt?: { style: string; lyrics: string; title: string } | null;
+  suno_output?: SunoOutput | null;
+  compliance: Record<string, boolean>;
 };
 
 export type KnowledgeChunk = {
@@ -97,20 +108,9 @@ export const api = {
       title: string;
       style: string;
       lyrics: string;
+      negative_tags?: string[];
+      producer_brief?: string;
     }>(`/suno/launch/${id}`),
-  sunoAutofill: (id: string, opts?: { wait?: boolean; timeoutSec?: number }) =>
-    http<{
-      submitted: boolean;
-      title: string;
-      style: string;
-      lyrics_chars: number;
-      suno_url: string | null;
-      note: string | null;
-    }>(
-      `/suno/autofill/${id}?wait=${opts?.wait ?? true}` +
-        (opts?.timeoutSec ? `&timeout_sec=${opts.timeoutSec}` : ""),
-      { method: "POST" },
-    ),
 };
 
 // ---- Streaming compose ----

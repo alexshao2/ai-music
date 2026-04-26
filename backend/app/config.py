@@ -30,9 +30,6 @@ class Settings(BaseSettings):
 
     knowledge_dir: str = "../knowledge"
 
-    # Suno autofill (M4) — drives the user's logged-in Chrome via CDP.
-    suno_cdp_url: str = "http://localhost:29229"
-
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

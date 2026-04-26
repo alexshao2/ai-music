@@ -32,9 +32,9 @@
 
 ## M4 — Suno deep integration
 
-- [ ] Build prompt Suno tối ưu từ draft (style ≤200 ký tự, lyrics đúng định dạng `[Verse]/[Chorus]`).
-- [ ] One-click "Mở trong Suno": copy clipboard + open tab.
-- [ ] (Optional) Playwright launcher: dùng profile đã đăng nhập của user để autofill.
+- [x] Build prompt Suno tối ưu từ draft (style ≤200 ký tự, lyrics đúng định dạng `[Verse]/[Chorus]`).
+- [x] Copy theo block (Title / Style / Lyrics riêng + Copy tất cả) + open tab.
+- ~~Playwright autofill~~ — đã loại bỏ ở M1.5: Suno có captcha hình ảnh sau khi Create, không thể tự động hoá ổn định. User paste tay là con đường duy nhất.
 
 ## M5 — Library & versioning
 

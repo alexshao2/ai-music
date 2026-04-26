@@ -83,6 +83,21 @@ def _format_style(draft: SongDraft) -> str:
 
 
 def build_prompt(draft: SongDraft) -> SunoPrompt:
+    """Build the 3 Suno copy-paste blocks from a draft.
+
+    Prefers the council-curated ``suno_output`` (Producer's curated style +
+    Lyricist's marker-enhanced lyrics) when present, since that path applies
+    the persona-level prompt engineering. Falls back to a derived style/lyric
+    formatter for stub-only drafts.
+    """
+    if draft.suno_output is not None:
+        style = draft.suno_output.style[:SUNO_STYLE_LIMIT].rstrip(", ")
+        lyrics = draft.suno_output.lyrics or "[Instrumental]"
+        return SunoPrompt(
+            title=draft.suno_output.title or draft.title,
+            style=style or _format_style(draft),
+            lyrics=lyrics,
+        )
     return SunoPrompt(
         title=draft.title,
         style=_format_style(draft),
