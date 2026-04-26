@@ -112,3 +112,81 @@ export const api = {
       { method: "POST" },
     ),
 };
+
+// ---- Streaming compose ----
+
+export type CouncilStreamEvent =
+  | {
+      type: "persona_started";
+      role: string;
+      name: string;
+      index: number;
+      total: number;
+    }
+  | {
+      type: "persona_completed";
+      role: string;
+      name: string;
+      message: string;
+      contributions: Record<string, unknown>;
+    }
+  | { type: "persona_failed"; role: string; name: string; error: string }
+  | { type: "refine_started"; role: string; name: string }
+  | {
+      type: "refine_completed";
+      role: string;
+      name: string;
+      message: string;
+      contributions: Record<string, unknown>;
+    }
+  | { type: "refine_failed"; role: string; name: string; error: string }
+  | { type: "draft"; draft: SongDraft }
+  | { type: "error"; message: string }
+  | { type: "done" };
+
+export async function composeStream(
+  brief: Brief,
+  opts: { fast?: boolean; signal?: AbortSignal },
+  onEvent: (event: CouncilStreamEvent) => void,
+): Promise<void> {
+  const url = `${API_BASE}/council/compose/stream${
+    opts.fast ? "?fast=true" : ""
+  }`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "text/event-stream",
+    },
+    body: JSON.stringify(brief),
+    signal: opts.signal,
+    cache: "no-store",
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status}: ${text}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  // SSE frames are separated by a blank line. Parse incrementally so events
+  // surface to the UI the moment they arrive, not at the end of the stream.
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      for (const line of block.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          onEvent(JSON.parse(line.slice(6)) as CouncilStreamEvent);
+        } catch (err) {
+          console.warn("compose stream: bad JSON", line, err);
+        }
+      }
+    }
+  }
+}

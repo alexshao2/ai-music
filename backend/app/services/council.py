@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -335,6 +336,160 @@ def _compose_with_llm(brief: Brief, *, refine: bool = True) -> SongDraft:
         )
 
     return _assemble_draft(brief, contributions, council_log)
+
+
+def compose_stream(
+    brief: Brief, *, refine: bool = True
+) -> Iterator[dict[str, Any]]:
+    """Run the council and yield events for live streaming.
+
+    Event shapes (all dicts with a ``type`` key):
+
+    - ``persona_started`` ``{role, name, index, total}``
+    - ``persona_completed`` ``{role, name, message, contributions}``
+    - ``persona_failed`` ``{role, name, error}`` — deterministic stub used
+    - ``refine_started`` ``{role, name}``
+    - ``refine_completed`` ``{role, name, message, contributions}``
+    - ``refine_failed`` ``{role, name, error}``
+    - ``draft`` ``{draft: SongDraft}`` — final assembled draft (Pydantic model)
+    - ``error`` ``{message: str}`` — fatal; nothing usable produced
+    - ``done`` ``{}`` — terminator
+
+    Falls back to ``_compose_stub`` (and emits ``persona_completed`` events from
+    the stub) when no LLM is configured, so the frontend gets a consistent event
+    stream regardless of backend mode.
+    """
+    if not settings.has_llm:
+        yield from _compose_stream_stub(brief)
+        return
+    try:
+        yield from _compose_stream_llm(brief, refine=refine)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("LLM compose_stream failed; emitting stub stream")
+        yield {"type": "error", "message": str(exc)}
+        yield from _compose_stream_stub(brief)
+
+
+def _compose_stream_llm(
+    brief: Brief, *, refine: bool
+) -> Iterator[dict[str, Any]]:
+    contributions: dict[str, dict[str, Any]] = {}
+    council_log: list[CouncilTurn] = []
+    stub_fallback = _compose_stub(brief)
+    stub_contributions = _stub_contributions_by_role(stub_fallback)
+    succeeded = 0
+    total = len(COUNCIL_PERSONAS)
+
+    for index, persona in enumerate(COUNCIL_PERSONAS):
+        yield {
+            "type": "persona_started",
+            "role": persona.role,
+            "name": persona.name,
+            "index": index,
+            "total": total,
+        }
+        result = _run_persona_with_retry(persona, brief, council_log, contributions)
+        if result is not None:
+            contributions[persona.role] = result["contributions"]
+            message = str(result["message"]).strip()
+            council_log.append(
+                CouncilTurn(persona=persona.name, role=persona.role, message=message)
+            )
+            succeeded += 1
+            yield {
+                "type": "persona_completed",
+                "role": persona.role,
+                "name": persona.name,
+                "message": message,
+                "contributions": result["contributions"],
+            }
+        else:
+            contributions[persona.role] = stub_contributions.get(persona.role, {})
+            placeholder = (
+                f"[{persona.name}: LLM call failed after retries; deterministic "
+                f"defaults used so the rest of the council can continue.]"
+            )
+            council_log.append(
+                CouncilTurn(persona=persona.name, role=persona.role, message=placeholder)
+            )
+            yield {
+                "type": "persona_failed",
+                "role": persona.role,
+                "name": persona.name,
+                "error": "LLM call failed after retries",
+            }
+
+    if succeeded == 0:
+        yield {"type": "error", "message": "Every council persona failed"}
+        yield from _compose_stream_stub(brief)
+        return
+
+    if refine:
+        for role in ("composer", "lyricist"):
+            persona = _by_role(role)
+            yield {
+                "type": "refine_started",
+                "role": persona.role,
+                "name": persona.name,
+            }
+            try:
+                refined = _refine_persona(persona, brief, council_log, contributions)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Refinement turn failed for %s", role)
+                yield {
+                    "type": "refine_failed",
+                    "role": persona.role,
+                    "name": persona.name,
+                    "error": str(exc),
+                }
+                continue
+            contributions[role] = refined["contributions"]
+            message = str(refined["message"]).strip()
+            council_log.append(
+                CouncilTurn(
+                    persona=f"{persona.name} (refine)",
+                    role=persona.role,
+                    message=message,
+                )
+            )
+            yield {
+                "type": "refine_completed",
+                "role": persona.role,
+                "name": persona.name,
+                "message": message,
+                "contributions": refined["contributions"],
+            }
+
+    draft = _assemble_draft(brief, contributions, council_log)
+    yield {"type": "draft", "draft": draft}
+    yield {"type": "done"}
+
+
+def _compose_stream_stub(brief: Brief) -> Iterator[dict[str, Any]]:
+    """Emit the same event shape from the deterministic stub.
+
+    Lets the frontend use one rendering path. Each persona event carries the
+    stub's deterministic message so the timeline still feels alive offline.
+    """
+    draft = _compose_stub(brief)
+    total = len(draft.council_log)
+    for index, turn in enumerate(draft.council_log):
+        yield {
+            "type": "persona_started",
+            "role": turn.role,
+            "name": turn.persona,
+            "index": index,
+            "total": total,
+        }
+        yield {
+            "type": "persona_completed",
+            "role": turn.role,
+            "name": turn.persona,
+            "message": turn.message,
+            "contributions": {},
+        }
+    yield {"type": "draft", "draft": draft}
+    yield {"type": "done"}
 
 
 def _by_role(role: str) -> Persona:

@@ -1,7 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { api, type Brief, type SongDraft } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import {
+  api,
+  composeStream,
+  type Brief,
+  type SongDraft,
+} from "@/lib/api";
+import {
+  applyEvent,
+  CouncilTimeline,
+  type PersonaState,
+} from "@/components/CouncilTimeline";
 
 type Props = {
   onDraft: (draft: SongDraft) => void;
@@ -24,6 +34,28 @@ export function BriefForm({ onDraft }: Props) {
   const [questions, setQuestions] = useState<string[] | null>(null);
   const [fastMode, setFastMode] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
+  const [council, setCouncil] = useState<{
+    states: Record<string, PersonaState>;
+    refineStates: Record<string, PersonaState>;
+  }>({ states: {}, refineStates: {} });
+  const [streaming, setStreaming] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const startedAtRef = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!streaming) return;
+    const t = setInterval(() => {
+      if (startedAtRef.current != null) {
+        setElapsed((Date.now() - startedAtRef.current) / 1000);
+      }
+    }, 500);
+    return () => clearInterval(t);
+  }, [streaming]);
+
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
 
   function update<K extends keyof Brief>(k: K, v: Brief[K]) {
     setBrief((b) => ({ ...b, [k]: v }));
@@ -51,12 +83,18 @@ export function BriefForm({ onDraft }: Props) {
 
   async function compose() {
     setBusy(true);
+    setStreaming(true);
     setError(null);
+    setCouncil({ states: {}, refineStates: {} });
+    setElapsed(0);
+    startedAtRef.current = Date.now();
     setProgress(
       fastMode
-        ? "Hội đồng đang họp (chế độ nhanh, ~3-4 phút)…"
-        : "Hội đồng đang họp + tinh chỉnh (~5-7 phút). Bạn có thể đi pha cà phê."
+        ? "Chế độ nhanh — ~3-4 phút. Theo dõi từng vị nói trực tiếp bên dưới."
+        : "Chế độ đầy đủ — ~5-7 phút (gồm tinh chỉnh sau Critic). Bạn sẽ thấy từng vị phát biểu real-time."
     );
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const payload: Brief = {
         ...brief,
@@ -65,14 +103,45 @@ export function BriefForm({ onDraft }: Props) {
           .map((s) => s.trim())
           .filter(Boolean),
       };
-      const draft = await api.compose(payload, { fast: fastMode });
-      onDraft(draft);
+      let receivedDraft: SongDraft | null = null;
+      let streamError: string | null = null;
+      await composeStream(
+        payload,
+        { fast: fastMode, signal: ctrl.signal },
+        (ev) => {
+          if (ev.type === "draft") {
+            receivedDraft = ev.draft;
+            return;
+          }
+          if (ev.type === "error") {
+            streamError = ev.message;
+            return;
+          }
+          setCouncil((c) => applyEvent(c.states, c.refineStates, ev));
+        },
+      );
+      if (receivedDraft) {
+        onDraft(receivedDraft);
+      } else if (streamError) {
+        setError(streamError);
+      } else {
+        setError("Stream kết thúc nhưng không có draft.");
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Lỗi không xác định");
+      if (!(e instanceof DOMException && e.name === "AbortError")) {
+        setError(e instanceof Error ? e.message : "Lỗi không xác định");
+      }
     } finally {
       setBusy(false);
+      setStreaming(false);
       setProgress(null);
+      startedAtRef.current = null;
+      abortRef.current = null;
     }
+  }
+
+  function cancelCompose() {
+    abortRef.current?.abort();
   }
 
   return (
@@ -155,6 +224,14 @@ export function BriefForm({ onDraft }: Props) {
         >
           {busy ? "Đang sáng tác…" : "Sáng tác bản nháp"}
         </button>
+        {streaming && (
+          <button
+            onClick={cancelCompose}
+            className="rounded-md border border-red-400/50 text-red-300 px-3 py-2 text-xs hover:bg-red-500/10"
+          >
+            Huỷ
+          </button>
+        )}
         <label className="flex items-center gap-2 text-xs text-white/70 select-none">
           <input
             type="checkbox"
@@ -169,6 +246,14 @@ export function BriefForm({ onDraft }: Props) {
 
       {progress && (
         <p className="text-xs text-white/60 italic">{progress}</p>
+      )}
+
+      {(streaming || Object.keys(council.states).length > 0) && (
+        <CouncilTimeline
+          states={council.states}
+          refineStates={council.refineStates}
+          elapsedSec={elapsed}
+        />
       )}
 
       {questions && questions.length > 0 && (
