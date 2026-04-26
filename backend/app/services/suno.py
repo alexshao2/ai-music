@@ -1,6 +1,8 @@
 """Build Suno prompts from a Song Draft."""
 from __future__ import annotations
 
+from typing import Any
+
 from app.schemas import SongDraft, SunoPrompt
 
 _SECTION_LABEL = {
@@ -13,8 +15,17 @@ _SECTION_LABEL = {
     "instrumental": "Instrumental",
 }
 
+# Suno's "style" field accepts ~200 chars before truncation.
+SUNO_STYLE_LIMIT = 200
+
 
 def _format_lyrics(draft: SongDraft) -> str:
+    """Render lyrics with [Section] tags Suno understands.
+
+    Walks the structure list in order and pulls the matching lyric block. Skips
+    sections that have no lyric (intro/outro often). The lyric dict may key on
+    plain section names (``chorus``) or numbered ones (``verse_1``, ``verse_2``).
+    """
     lines: list[str] = []
     seen_verse = 0
     seen_chorus = 0
@@ -28,7 +39,11 @@ def _format_lyrics(draft: SongDraft) -> str:
             seen_chorus += 1
             if seen_chorus == 1:
                 key_in_lyrics = "chorus"
-        body = draft.lyrics.get(key_in_lyrics) or draft.lyrics.get(sec.section) or ""
+        body = (
+            draft.lyrics.get(key_in_lyrics)
+            or draft.lyrics.get(sec.section)
+            or ""
+        )
         if not body:
             continue
         lines.append(f"[{label}]")
@@ -38,19 +53,33 @@ def _format_lyrics(draft: SongDraft) -> str:
 
 
 def _format_style(draft: SongDraft) -> str:
-    instruments = draft.arrangement.get("instruments") or []
-    palette = draft.production.get("palette") or ""
-    parts = [
-        draft.brief.genre,
-        draft.brief.mood,
-        f"{draft.tempo_bpm} BPM",
-        draft.key,
-        ", ".join(map(str, instruments)) if instruments else "",
-        str(palette),
-    ]
-    text = ", ".join(p for p in parts if p)
-    # Suno style field is typically capped at 200 chars.
-    return text[:200]
+    """Build the Suno style string.
+
+    Prefers the producer's curated ``suno_style_tags`` when available, then
+    falls back to a derived list of (genre, mood, tempo, key, instruments,
+    palette).
+    """
+    prod: dict[str, Any] = dict(draft.production or {})
+    tags: list[str] = list(prod.get("suno_style_tags") or [])
+    parts: list[str] = []
+
+    if tags:
+        parts.extend(str(t).strip() for t in tags if str(t).strip())
+    else:
+        instruments = list((draft.arrangement or {}).get("instruments") or [])
+        palette = prod.get("sound_palette") or prod.get("palette") or ""
+        derived = [
+            draft.brief.genre,
+            draft.brief.mood,
+            f"{draft.tempo_bpm} BPM",
+            draft.key,
+            ", ".join(map(str, instruments)) if instruments else "",
+            str(palette),
+        ]
+        parts = [p for p in derived if p]
+
+    text = ", ".join(parts)
+    return text[:SUNO_STYLE_LIMIT].rstrip(", ")
 
 
 def build_prompt(draft: SongDraft) -> SunoPrompt:

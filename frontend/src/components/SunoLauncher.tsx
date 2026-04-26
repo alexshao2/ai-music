@@ -5,12 +5,19 @@ import { api, type SongDraft } from "@/lib/api";
 
 type Props = { draft: SongDraft };
 
+type AutofillState = {
+  status: "idle" | "running" | "done" | "error";
+  message?: string;
+  url?: string | null;
+};
+
 export function SunoLauncher({ draft }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [auto, setAuto] = useState<AutofillState>({ status: "idle" });
 
-  async function launch() {
+  async function launchManual() {
     setBusy(true);
     setError(null);
     try {
@@ -30,30 +37,102 @@ export function SunoLauncher({ draft }: Props) {
     }
   }
 
+  async function generateAuto() {
+    setAuto({ status: "running", message: "Hội đồng đang điều khiển Suno…" });
+    try {
+      const data = await api.sunoAutofill(draft.id, { wait: true, timeoutSec: 240 });
+      setAuto({
+        status: "done",
+        message: data.note ?? "Đã submit bài hát lên Suno.",
+        url: data.suno_url ? `https://suno.com${data.suno_url}` : null,
+      });
+    } catch (e) {
+      setAuto({
+        status: "error",
+        message: e instanceof Error ? e.message : "Autofill thất bại",
+      });
+    }
+  }
+
   return (
-    <div className="rounded-xl border border-gold/40 bg-gold/5 p-4">
+    <div className="rounded-xl border border-gold/40 bg-gold/5 p-4 space-y-3">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h3 className="font-display text-gold text-lg">Mở trong Suno</h3>
+          <h3 className="font-display text-gold text-lg">Tạo bài hát với Suno</h3>
           <p className="text-sm text-white/70">
-            Tạo bài hát hoàn chỉnh trên Suno AI với prompt do hội đồng đã tinh chỉnh.
-            Prompt sẽ được copy vào clipboard, sẵn sàng paste.
+            Hội đồng đã chuẩn bị xong prompt. Chọn 1 trong 2 cách bên dưới.
           </p>
         </div>
-        <button
-          onClick={launch}
-          disabled={busy}
-          className="rounded-md bg-gold text-ink px-4 py-2 text-sm font-medium disabled:opacity-50 hover:opacity-90"
-        >
-          {busy ? "Đang chuẩn bị…" : "Mở Suno →"}
-        </button>
       </div>
-      {copied && (
-        <p className="mt-2 text-xs text-accent">
-          Prompt đã được copy. Paste vào trang Custom của Suno.
-        </p>
-      )}
-      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm text-accent">Tự động</span>
+            <span className="text-[10px] uppercase tracking-wide text-gold/70">
+              khuyên dùng
+            </span>
+          </div>
+          <p className="text-xs text-white/60">
+            Backend sẽ điều khiển Suno đã đăng nhập trên trình duyệt và bấm Create
+            giúp bạn (cần Chrome chạy với --remote-debugging-port=29229).
+          </p>
+          <button
+            onClick={generateAuto}
+            disabled={auto.status === "running"}
+            className="w-full rounded-md bg-gold text-ink px-3 py-2 text-sm font-medium disabled:opacity-50 hover:opacity-90"
+          >
+            {auto.status === "running"
+              ? "Đang tạo bài hát…"
+              : "Tạo bài hát tự động →"}
+          </button>
+          {auto.message && (
+            <p
+              className={`text-xs ${
+                auto.status === "error" ? "text-red-400" : "text-white/70"
+              }`}
+            >
+              {auto.message}
+            </p>
+          )}
+          {auto.url && (
+            <a
+              href={auto.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block text-xs underline text-accent break-all"
+            >
+              {auto.url}
+            </a>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm text-accent">Thủ công</span>
+            <span className="text-[10px] uppercase tracking-wide text-white/40">
+              an toàn
+            </span>
+          </div>
+          <p className="text-xs text-white/60">
+            Copy prompt vào clipboard và mở Suno trong tab mới — bạn paste tay
+            vào ô Custom.
+          </p>
+          <button
+            onClick={launchManual}
+            disabled={busy}
+            className="w-full rounded-md border border-gold/60 text-gold px-3 py-2 text-sm font-medium disabled:opacity-50 hover:bg-gold/10"
+          >
+            {busy ? "Đang chuẩn bị…" : "Mở Suno (paste tay) →"}
+          </button>
+          {copied && (
+            <p className="text-xs text-accent">
+              Prompt đã copy. Paste vào trang Custom của Suno.
+            </p>
+          )}
+          {error && <p className="text-xs text-red-400">{error}</p>}
+        </div>
+      </div>
     </div>
   );
 }

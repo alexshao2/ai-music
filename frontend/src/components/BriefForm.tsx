@@ -22,6 +22,8 @@ export function BriefForm({ onDraft }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [questions, setQuestions] = useState<string[] | null>(null);
+  const [fastMode, setFastMode] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
 
   function update<K extends keyof Brief>(k: K, v: Brief[K]) {
     setBrief((b) => ({ ...b, [k]: v }));
@@ -50,6 +52,11 @@ export function BriefForm({ onDraft }: Props) {
   async function compose() {
     setBusy(true);
     setError(null);
+    setProgress(
+      fastMode
+        ? "Hội đồng đang họp (chế độ nhanh, ~3-4 phút)…"
+        : "Hội đồng đang họp + tinh chỉnh (~5-7 phút). Bạn có thể đi pha cà phê."
+    );
     try {
       const payload: Brief = {
         ...brief,
@@ -58,12 +65,13 @@ export function BriefForm({ onDraft }: Props) {
           .map((s) => s.trim())
           .filter(Boolean),
       };
-      const draft = await api.compose(payload);
+      const draft = await api.compose(payload, { fast: fastMode });
       onDraft(draft);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Lỗi không xác định");
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -147,8 +155,21 @@ export function BriefForm({ onDraft }: Props) {
         >
           {busy ? "Đang sáng tác…" : "Sáng tác bản nháp"}
         </button>
+        <label className="flex items-center gap-2 text-xs text-white/70 select-none">
+          <input
+            type="checkbox"
+            checked={fastMode}
+            onChange={(e) => setFastMode(e.target.checked)}
+            className="accent-accent"
+          />
+          Chế độ nhanh (bỏ qua tinh chỉnh sau Critic)
+        </label>
         {error && <span className="text-sm text-red-400">{error}</span>}
       </div>
+
+      {progress && (
+        <p className="text-xs text-white/60 italic">{progress}</p>
+      )}
 
       {questions && questions.length > 0 && (
         <div className="rounded-lg border border-accent/30 bg-plum/40 p-3">
