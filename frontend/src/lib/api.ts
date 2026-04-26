@@ -76,11 +76,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(b),
     }),
-  compose: (b: Brief) =>
-    http<SongDraft>("/council/compose", {
-      method: "POST",
-      body: JSON.stringify(b),
-    }),
+  compose: (b: Brief, opts?: { fast?: boolean }) =>
+    http<SongDraft>(
+      `/council/compose${opts?.fast ? "?fast=true" : ""}`,
+      {
+        method: "POST",
+        body: JSON.stringify(b),
+      },
+    ),
   drafts: () => http<SongDraft[]>("/studio/drafts"),
   draft: (id: string) => http<SongDraft>(`/studio/drafts/${id}`),
   knowledgeTopics: () => http<KnowledgeChunk[]>("/knowledge/topics"),
@@ -95,4 +98,17 @@ export const api = {
       style: string;
       lyrics: string;
     }>(`/suno/launch/${id}`),
+  sunoAutofill: (id: string, opts?: { wait?: boolean; timeoutSec?: number }) =>
+    http<{
+      submitted: boolean;
+      title: string;
+      style: string;
+      lyrics_chars: number;
+      suno_url: string | null;
+      note: string | null;
+    }>(
+      `/suno/autofill/${id}?wait=${opts?.wait ?? true}` +
+        (opts?.timeoutSec ? `&timeout_sec=${opts.timeoutSec}` : ""),
+      { method: "POST" },
+    ),
 };

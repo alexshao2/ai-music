@@ -32,6 +32,11 @@ def brief_intake(brief: Brief) -> dict[str, object]:
 
 
 @router.post("/compose", response_model=SongDraft)
-def compose(brief: Brief) -> SongDraft:
-    draft = council_svc.compose(brief)
+def compose(brief: Brief, fast: bool = False) -> SongDraft:
+    """Run the council and return a SongDraft.
+
+    Query params:
+      fast=true  — skip the post-Critic refinement pass (~25% faster, less polished).
+    """
+    draft = council_svc.compose(brief, refine=not fast)
     return store.save(draft)
