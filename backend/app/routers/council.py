@@ -1,7 +1,12 @@
 """Council endpoints: brief intake, composition, and persona introspection."""
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
+from typing import Any
+
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from app.schemas import Brief, SongDraft
 from app.services import council as council_svc
@@ -40,3 +45,37 @@ def compose(brief: Brief, fast: bool = False) -> SongDraft:
     """
     draft = council_svc.compose(brief, refine=not fast)
     return store.save(draft)
+
+
+@router.post("/compose/stream")
+def compose_stream(brief: Brief, fast: bool = False) -> StreamingResponse:
+    """Run the council and stream events as Server-Sent Events.
+
+    Each event is a JSON object on a single line, prefixed with ``data: ``.
+    See ``council_svc.compose_stream`` for the event shapes. The final ``draft``
+    event also persists the draft to the store and includes its ``id``.
+    """
+
+    def event_stream() -> Iterator[bytes]:
+        for event in council_svc.compose_stream(brief, refine=not fast):
+            payload: dict[str, Any] = dict(event)
+            if event.get("type") == "draft":
+                draft: SongDraft = event["draft"]  # type: ignore[assignment]
+                stored = store.save(draft)
+                payload["draft"] = stored.model_dump(mode="json")
+            yield _sse(payload)
+        yield _sse({"type": "done"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+def _sse(payload: dict[str, Any]) -> bytes:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
