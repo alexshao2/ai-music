@@ -202,18 +202,60 @@ def _first_visible(locator: Locator) -> Locator | None:
 
 
 def _click_create(page: Page) -> None:
-    btn = page.get_by_role("button", name="Create", exact=True)
-    try:
-        btn.wait_for(state="visible", timeout=5000)
-    except PlaywrightTimeoutError as exc:
-        raise SunoAutofillError("Cannot find the 'Create' button.") from exc
+    """Click the main "Create" form button at the bottom of the form.
 
-    if btn.is_disabled():
+    Suno's page exposes multiple Create-ish controls:
+      * a sidebar icon button whose tooltip is "Create New Workspace" (width ~16px),
+      * the orange form submit, whose accessible name is **"Create song"** via
+        ``aria-label`` even though the visible text is just "Create" (~350px wide).
+
+    Strategy: prefer the explicit ``aria-label="Create song"`` selector. Fall back
+    to scanning ``button:has-text("Create")`` and picking the widest visible one
+    so we don't regress if Suno renames the aria-label.
+    """
+    page.wait_for_timeout(400)
+    primary = page.locator('button[aria-label="Create song"]')
+    try:
+        primary.first.wait_for(state="visible", timeout=5000)
+        target: Locator = primary.first
+    except PlaywrightTimeoutError:
+        target = _widest_visible(page.locator('button:has-text("Create")'))
+        if target is None:
+            raise SunoAutofillError(  # noqa: B904
+                "Cannot find the form 'Create' button. Suno's UI may have changed."
+            )
+
+    if target.is_disabled():
         raise SunoAutofillError(
             "The Create button is disabled. Suno likely rejected one of the inputs "
             "(lyrics empty, style empty, or no credits)."
         )
-    btn.click()
+    target.click()
+
+
+def _widest_visible(locator: Locator, *, min_width: float = 100.0) -> Locator | None:
+    """Return the visible candidate with the largest bounding-box width, or None.
+
+    Used to disambiguate between a narrow icon button and a wide form button
+    when both share the same role/text.
+    """
+    best: Locator | None = None
+    best_width = min_width
+    for i in range(locator.count()):
+        cand = locator.nth(i)
+        try:
+            if not cand.is_visible():
+                continue
+            box = cand.bounding_box()
+        except Exception:  # noqa: BLE001
+            continue
+        if not box:
+            continue
+        width = float(box["width"])
+        if width > best_width:
+            best = cand
+            best_width = width
+    return best
 
 
 def _wait_for_new_song(page: Page, *, timeout_sec: int) -> str | None:
