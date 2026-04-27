@@ -121,9 +121,11 @@ docker run --rm -v ai-music_backend-data:/data -v $PWD:/backup alpine \
 
 ## 6. Bảo mật / chỉ phục vụ qua tunnel
 
-Mặc định `docker-compose.yml` có map port `3000` và `8000` ra host (tiện cho
-debug LAN). Trong môi trường production thuần tunnel, bỏ block `ports:` của
-`backend` và `frontend` — cloudflared vẫn truy cập được qua network nội bộ.
+Mặc định `docker-compose.yml` map port `13000` (frontend) và `18000` (backend)
+ra host — cố tình lệch khỏi `3000` / `8000` để tránh đụng với dev server có sẵn.
+Muốn đổi thì set `BACKEND_HOST_PORT` / `FRONTEND_HOST_PORT` trong `.env`. Trong
+môi trường production thuần tunnel, bỏ luôn block `ports:` của `backend` và
+`frontend` — cloudflared vẫn truy cập được qua network nội bộ.
 
 `.env` không được commit. `TUNNEL_TOKEN` cũng đừng paste vào chat/issue —
 nếu lộ, **revoke tunnel** trong Zero Trust dashboard và tạo lại.
@@ -138,6 +140,10 @@ nếu lộ, **revoke tunnel** trong Zero Trust dashboard và tạo lại.
   `CORS_ORIGINS` rồi `docker compose up -d backend`.
 - **Cloudflare báo `502 Bad Gateway`** → service tên trong Public Hostname
   phải là `http://backend:8000` / `http://frontend:3000` (đúng tên container
-  trong compose), không phải `localhost`.
+  trong compose), không phải `localhost`. Lưu ý: cloudflared luôn dùng port
+  nội bộ (`8000` / `3000`), không phải `BACKEND_HOST_PORT` / `FRONTEND_HOST_PORT`.
+- **`bind: address already in use`** khi `docker compose up` → đổi
+  `BACKEND_HOST_PORT` / `FRONTEND_HOST_PORT` trong `.env` sang cổng trống khác
+  (default đang là `18000` / `13000`).
 - **Backend không thấy LLM key** → `docker compose exec backend env | grep LLM`
   để xác nhận biến đã được inject.

@@ -34,7 +34,7 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:13000}
       KNOWLEDGE_DIR: /app/knowledge
       HOST: 0.0.0.0
       PORT: "8000"
@@ -46,7 +46,7 @@ services:
     ports:
       # Optional: expose to host for local debugging. Remove in pure-tunnel
       # deployments to avoid leaking the API on the LAN.
-      - "${BACKEND_HOST_PORT:-8000}:8000"
+      - "${BACKEND_HOST_PORT:-18000}:8000"
     networks:
       - ai-music-net
     healthcheck:
@@ -64,7 +64,7 @@ services:
         # Public URL the BROWSER will use to call the backend. For Cloudflare
         # Tunnel deployments this is typically the api.* hostname mapped in the
         # Zero Trust dashboard. Defaults to localhost for dev.
-        NEXT_PUBLIC_API_BASE: ${PUBLIC_API_BASE:-http://localhost:8000}
+        NEXT_PUBLIC_API_BASE: ${PUBLIC_API_BASE:-http://localhost:18000}
     image: ai-music-frontend:latest
     container_name: ai-music-frontend
     restart: unless-stopped
@@ -77,7 +77,7 @@ services:
     expose:
       - "3000"
     ports:
-      - "${FRONTEND_HOST_PORT:-3000}:3000"
+      - "${FRONTEND_HOST_PORT:-13000}:3000"
     networks:
       - ai-music-net
 
