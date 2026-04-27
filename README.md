@@ -68,6 +68,19 @@ npm run dev
 
 Studio UI: http://localhost:3000
 
+### Self-host (Docker Compose + Cloudflare Tunnel)
+
+Chạy toàn bộ stack trên server của bạn và public ra Internet bằng Cloudflare
+Tunnel ở chế độ token, không cần mở port:
+
+```bash
+cp .env.example .env
+# điền TUNNEL_TOKEN, PUBLIC_API_BASE, LLM_API_KEY, ...
+docker compose up -d --build
+```
+
+Hướng dẫn đầy đủ (tạo tunnel, map hostname, troubleshooting): [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
+
 ### Suno Bridge
 
 Khi đã hài lòng với prompt do hội đồng tinh chỉnh, click **"Mở trong Suno"** ở Studio. Một tab mới sẽ mở [suno.com/create](https://suno.com/create) với prompt đã được copy vào clipboard, sẵn sàng paste.

@@ -1,0 +1,104 @@
+# Self-host docker-compose for ai-music.
+#
+# Services:
+#   - backend:    FastAPI (uvicorn) on :8000
+#   - frontend:   Next.js on :3000 (NEXT_PUBLIC_API_BASE baked at build time)
+#   - cloudflared: Cloudflare Tunnel (token mode) — exposes services publicly
+#
+# Cloudflare Tunnel is configured from the Zero Trust dashboard:
+#   Networks → Tunnels → <your tunnel> → Public Hostnames, e.g.
+#     music.example.com  →  http://frontend:3000
+#     api.example.com    →  http://backend:8000
+# The tunnel container reaches the other services over the internal compose
+# network (`ai-music-net`) by service name, so no host ports need to be exposed.
+#
+# Quick start:
+#   cp .env.example .env   # fill in TUNNEL_TOKEN, LLM_API_KEY, PUBLIC_API_BASE
+#   docker compose up -d --build
+#
+# See docs/SELF_HOSTING.md for the full guide.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: ai-music-backend:latest
+    container_name: ai-music-backend
+    restart: unless-stopped
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      KNOWLEDGE_DIR: /app/knowledge
+      HOST: 0.0.0.0
+      PORT: "8000"
+    volumes:
+      # Persist generated drafts/sessions across restarts.
+      - backend-data:/app/backend/app/data
+    expose:
+      - "8000"
+    ports:
+      # Optional: expose to host for local debugging. Remove in pure-tunnel
+      # deployments to avoid leaking the API on the LAN.
+      - "${BACKEND_HOST_PORT:-8000}:8000"
+    networks:
+      - ai-music-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # Public URL the BROWSER will use to call the backend. For Cloudflare
+        # Tunnel deployments this is typically the api.* hostname mapped in the
+        # Zero Trust dashboard. Defaults to localhost for dev.
+        NEXT_PUBLIC_API_BASE: ${PUBLIC_API_BASE:-http://localhost:8000}
+    image: ai-music-frontend:latest
+    container_name: ai-music-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    expose:
+      - "3000"
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
+    networks:
+      - ai-music-net
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ai-music-cloudflared
+    restart: unless-stopped
+    # `tunnel run --token …` is the token-based connector. Public hostname →
+    # service routing is configured in the Cloudflare Zero Trust dashboard.
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - ai-music-net
+
+volumes:
+  backend-data:
+
+networks:
+  ai-music-net:
+    driver: bridge
