@@ -46,7 +46,7 @@ Intro (4)  →  A (16)  →  B (16, new melody)  →  A' (16)  →  B' (8)  → 
 
 **Duration**: 1:30–3:00 phút. Ngắn, loop, playlist-friendly.
 
-**Section transition**: dùng drum fill NHẸNH, hoặc chỉ thêm/bớt 1 layer. Không có build-up/drop dramatic.
+**Section transition**: dùng drum fill NHẸ, hoặc chỉ thêm/bớt 1 layer. Không có build-up/drop dramatic.
 
 ## 3. Vòng hợp âm điển hình
 

@@ -84,7 +84,7 @@ Intro (4–8 bar, ambient pad hoặc vocal snippet)
 7. **Daniel Caesar — Best Part (ft. H.E.R.)** (68 BPM, Ab major) — neo-soul duet
 8. **Daniel Caesar — Get You** (65 BPM, Bb major) — gospel-influenced R&B
 9. **Beyoncé — Drunk in Love** (100 BPM, F minor) — 808-heavy R&B
-10. **H.E.R. — Best Part** (68 BPM) — guitar-led intimate R&B
+10. **H.E.R. — Focus** (65 BPM, E major) — guitar-led intimate R&B
 11. **Khalid — Location** (90 BPM, F major) — chill R&B pop
 12. **Summer Walker — Playing Games** (65 BPM, Eb minor) — dark moody R&B
 13. **Jhené Aiko — Sativa** (70 BPM, Db major) — ambient R&B
