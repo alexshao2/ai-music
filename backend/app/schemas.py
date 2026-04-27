@@ -72,6 +72,39 @@ class SongDraft(BaseModel):
     suno_prompt: dict[str, str] | None = None
     suno_output: SunoOutput | None = None
     compliance: dict[str, bool] = Field(default_factory=dict)
+    evaluation: QualityEvaluation | None = None
+
+
+class QualityScores(BaseModel):
+    """Per-dimension quality scores from Critic / A&R evaluator."""
+
+    melody_catchiness: float = Field(0, ge=0, le=10)
+    lyric_quality: float = Field(0, ge=0, le=10)
+    harmonic_sophistication: float = Field(0, ge=0, le=10)
+    structural_coherence: float = Field(0, ge=0, le=10)
+    production_direction: float = Field(0, ge=0, le=10)
+    genre_authenticity: float = Field(0, ge=0, le=10)
+    overall: float = Field(0, ge=0, le=10)
+
+
+class QualityEvaluation(BaseModel):
+    """Result of a quality gate evaluation pass."""
+
+    scores: QualityScores = Field(default_factory=QualityScores)
+    verdict: Literal["RELEASE", "REVISE", "REJECT"] = "REVISE"
+    feedback: str = ""
+    revision_notes: str = ""
+    attempt: int = 1
+    max_attempts_reached: bool = False
+
+
+class PromptValidation(BaseModel):
+    """Validation result for a Suno prompt before paste."""
+
+    valid: bool = True
+    score: float = Field(10.0, ge=0, le=10)
+    issues: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
 
 
 class KnowledgeChunk(BaseModel):

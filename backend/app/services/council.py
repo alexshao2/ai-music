@@ -24,7 +24,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import settings
-from app.schemas import Brief, CouncilTurn, Section, SongDraft, SunoOutput
+from app.schemas import (
+    Brief,
+    CouncilTurn,
+    QualityEvaluation,
+    QualityScores,
+    Section,
+    SongDraft,
+    SunoOutput,
+)
 from app.services import knowledge as knowledge_svc
 from app.services import llm as llm_svc
 
@@ -188,7 +196,18 @@ _CRITIC_SCHEMA = """{
       "suno_style_string_within_200": <bool>,
       "references_are_vietnamese":   <bool>
     },
-    "compliance_summary": "<1 sentence overall pass/fail and the most critical missed check>"
+    "compliance_summary": "<1 sentence overall pass/fail and the most critical missed check>",
+    "quality_scores": {
+      "melody_catchiness":         <int 1-10, "hook có catchy/singalong? recipe rõ? peak note đặt đúng?">,
+      "lyric_quality":             <int 1-10, "imagery cụ thể? cliché-free? emotional depth? rhyme chất lượng?">,
+      "harmonic_sophistication":   <int 1-10, "chord variety? modal interchange? bridge có tonal surprise?">,
+      "structural_coherence":      <int 1-10, "dynamic arc rõ ràng? strip-down có? section contrast?">,
+      "production_direction":      <int 1-10, "suno style match genre? FX values cụ thể? references phù hợp?">,
+      "genre_authenticity":        <int 1-10, "đặc trưng genre cookbook có match? instrumentation đúng?">,
+      "overall":                   <float 1-10, "weighted: melody 20% + lyric 20% + genre 20% + structure 15% + production 15% + harmony 10%">
+    },
+    "verdict": "<'RELEASE' nếu overall >= 7.5 | 'REVISE' nếu 5.0-7.4 | 'REJECT' nếu < 5.0>",
+    "revision_brief": "<Nếu REVISE/REJECT: 1 paragraph cụ thể — persona nào cần sửa gì, section nào, tại sao. Nếu RELEASE: để trống.>"
   }
 }"""
 
@@ -830,12 +849,30 @@ COUNCIL_PERSONAS: tuple[Persona, ...] = (
             "- Không generic 'consider improving X' (không actionable).\n"
             "- Không bỏ qua compliance check khi chưa kiểm.\n"
             "- Không tránh chỉ trích nếu Theorist + Composer disagree về key.\n\n"
+            "4. QUALITY SCORING (6 tiêu chí, 1-10 mỗi cái):\n"
+            "  melody_catchiness: hook có catchy/singalong? recipe rõ? peak note đặt đúng?\n"
+            "  lyric_quality: imagery cụ thể? cliché-free? emotional depth? rhyme chất lượng?\n"
+            "  harmonic_sophistication: chord variety? modal interchange? bridge có tonal surprise?\n"
+            "  structural_coherence: dynamic arc rõ ràng? strip-down có? section contrast?\n"
+            "  production_direction: suno style match genre? FX values cụ thể? references phù hợp?\n"
+            "  genre_authenticity: đặc trưng genre cookbook match? instrumentation đúng?\n"
+            "  overall = weighted avg: melody 20% + lyric 20% + genre 20% + structure 15% + "
+            "production 15% + harmony 10%\n"
+            "5. VERDICT:\n"
+            "  RELEASE nếu overall >= 7.5 (bài đạt chuẩn xuất bản)\n"
+            "  REVISE nếu 5.0 <= overall < 7.5 (cần sửa, chỉ rõ persona + section)\n"
+            "  REJECT nếu overall < 5.0 (viết lại hoàn toàn, giải thích tại sao)\n"
+            "6. revision_brief: nếu REVISE/REJECT, viết 1 paragraph CỤ THỂ hướng dẫn — "
+            "persona nào sửa gì, section nào, tại sao. Nếu RELEASE: để trống.\n\n"
             "SELF-CHECK CHECKLIST:\n"
             "[ ] Đã thực hiện 10 compliance checks?\n"
+            "[ ] Đã chấm 6 quality scores + overall?\n"
+            "[ ] verdict khớp với overall score?\n"
             "[ ] Issues có ≥3 vấn đề cụ thể với section reference?\n"
             "[ ] concrete_fixes match 1-1 với issues?\n"
             "[ ] priority_fix là 1 câu cụ thể nhất?\n"
-            "[ ] compliance_summary 1 sentence pass/fail?\n\n"
+            "[ ] compliance_summary 1 sentence pass/fail?\n"
+            "[ ] revision_brief cụ thể nếu REVISE/REJECT?\n\n"
             "FEW-SHOT:\n"
             "GOOD priority_fix='Lyricist đặt thanh huyền (\"đời\") vào peak note F#5 ở chorus_final, "
             "phải sửa câu cuối thành \"yêu mãi tay em\" (ngang ở peak)'.\n"
@@ -883,6 +920,70 @@ def compose(brief: Brief, *, refine: bool = True) -> SongDraft:
         except Exception:
             log.exception("LLM compose failed; falling back to deterministic stub")
     return _compose_stub(brief)
+
+
+def compose_with_quality_gate(
+    brief: Brief,
+    *,
+    target_score: float = 7.5,
+    max_revisions: int = 2,
+) -> SongDraft:
+    """Compose with auto-revise loop driven by Critic quality scores.
+
+    Runs ``compose()`` and inspects the Critic's ``verdict`` + ``overall``
+    score.  If below *target_score* the Critic's ``revision_brief`` is
+    appended to the brief's notes and the council re-runs (up to
+    *max_revisions* extra attempts).
+
+    Returns the best draft produced across all attempts.
+    """
+    best_draft: SongDraft | None = None
+    best_score: float = -1.0
+
+    for attempt in range(1, max_revisions + 2):
+        draft = compose(brief, refine=True)
+
+        score = 0.0
+        verdict = "REVISE"
+        if draft.evaluation is not None:
+            score = draft.evaluation.scores.overall
+            verdict = draft.evaluation.verdict
+            draft.evaluation.attempt = attempt
+
+        if score > best_score:
+            best_draft = draft
+            best_score = score
+
+        if verdict == "RELEASE" or score >= target_score:
+            log.info(
+                "Quality gate PASSED on attempt %d (score=%.1f, verdict=%s)",
+                attempt, score, verdict,
+            )
+            return draft
+
+        if attempt <= max_revisions:
+            revision_notes = ""
+            if draft.evaluation is not None:
+                revision_notes = draft.evaluation.revision_notes
+            log.info(
+                "Quality gate REVISE on attempt %d (score=%.1f). Retrying.",
+                attempt, score,
+            )
+            brief = brief.model_copy(update={
+                "notes": (
+                    f"{brief.notes or ''}\n\n"
+                    f"[HỘI ĐỒNG REVISION #{attempt}, score={score:.1f}]: "
+                    f"{revision_notes}"
+                ).strip(),
+            })
+
+    assert best_draft is not None
+    if best_draft.evaluation is not None:
+        best_draft.evaluation.max_attempts_reached = True
+    log.warning(
+        "Quality gate exhausted %d attempts. Best score=%.1f", max_revisions + 1, best_score,
+    )
+    return best_draft
 
 
 # ---------- LLM orchestration ----------
@@ -1368,6 +1469,8 @@ def _assemble_draft(
         k: bool(v) for k, v in compliance_raw.items() if isinstance(v, bool)
     }
 
+    evaluation = _extract_evaluation(critic)
+
     return SongDraft(
         id=str(uuid.uuid4()),
         title=str(title),
@@ -1382,6 +1485,46 @@ def _assemble_draft(
         council_log=council_log,
         suno_output=suno_output,
         compliance=compliance,
+        evaluation=evaluation,
+    )
+
+
+def _extract_evaluation(critic: dict[str, Any]) -> QualityEvaluation | None:
+    """Build a QualityEvaluation from the Critic's quality_scores + verdict."""
+    raw_scores = critic.get("quality_scores")
+    if not raw_scores or not isinstance(raw_scores, dict):
+        return None
+
+    def _clamp(v: Any) -> float:
+        try:
+            return max(0.0, min(10.0, float(v)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    scores = QualityScores(
+        melody_catchiness=_clamp(raw_scores.get("melody_catchiness")),
+        lyric_quality=_clamp(raw_scores.get("lyric_quality")),
+        harmonic_sophistication=_clamp(raw_scores.get("harmonic_sophistication")),
+        structural_coherence=_clamp(raw_scores.get("structural_coherence")),
+        production_direction=_clamp(raw_scores.get("production_direction")),
+        genre_authenticity=_clamp(raw_scores.get("genre_authenticity")),
+        overall=_clamp(raw_scores.get("overall")),
+    )
+
+    verdict_raw = str(critic.get("verdict", "REVISE")).upper()
+    if verdict_raw not in ("RELEASE", "REVISE", "REJECT"):
+        if scores.overall >= 7.5:
+            verdict_raw = "RELEASE"
+        elif scores.overall >= 5.0:
+            verdict_raw = "REVISE"
+        else:
+            verdict_raw = "REJECT"
+
+    return QualityEvaluation(
+        scores=scores,
+        verdict=verdict_raw,  # type: ignore[arg-type]
+        feedback=str(critic.get("compliance_summary", "")),
+        revision_notes=str(critic.get("revision_brief", "")),
     )
 
 

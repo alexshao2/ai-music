@@ -77,5 +77,23 @@ def compose_stream(brief: Brief, fast: bool = False) -> StreamingResponse:
     )
 
 
+@router.post("/compose/quality", response_model=SongDraft)
+def compose_quality(
+    brief: Brief,
+    target_score: float = 7.5,
+    max_revisions: int = 2,
+) -> SongDraft:
+    """Compose with quality gate: auto-revise until score >= target.
+
+    Query params:
+      target_score  — minimum overall score to pass (default 7.5).
+      max_revisions — maximum extra revision attempts (default 2).
+    """
+    draft = council_svc.compose_with_quality_gate(
+        brief, target_score=target_score, max_revisions=max_revisions,
+    )
+    return store.save(draft)
+
+
 def _sse(payload: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
