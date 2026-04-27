@@ -46,7 +46,7 @@ Cả ba phải pass.
 
 Nếu thêm tài liệu mới dưới `knowledge/`:
 
-- Đặt vào thư mục con phù hợp (`theory`, `harmony`, `songwriting`, `lyrics`, `arrangement`, `genres`, `production`).
+- Đặt vào thư mục con phù hợp (`theory`, `harmony`, `songwriting`, `lyrics`, `arrangement`, `genres`, `production`, `evaluation`).
 - Có frontmatter YAML:
   ```yaml
   ---
