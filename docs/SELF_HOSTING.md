@@ -67,6 +67,15 @@ CORS_ORIGINS=https://music.example.com
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
+
+# Embedding — TÁCH RIÊNG với chat LLM vì provider (OpenAI, 9Router,
+# OpenRouter, …) tính quota/permission khác nhau. Bỏ trống từng field sẽ
+# fallback về LLM_* tương ứng, nên nếu provider của bạn serve chat + embedding
+# cùng một endpoint/key thì chỉ cần set EMBEDDING_MODEL là đủ.
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_API_KEY=sk-embedding-...
+EMBEDDING_MODEL=text-embedding-3-small
+# EMBEDDING_DIMENSIONS=1536   # chỉ set khi provider hỗ trợ (OpenAI text-embedding-3-*)
 ```
 
 > `PUBLIC_API_BASE` được **bake vào bundle Next.js lúc build**. Nếu sau này bạn
@@ -147,3 +156,13 @@ nếu lộ, **revoke tunnel** trong Zero Trust dashboard và tạo lại.
   (default đang là `18000` / `13000`).
 - **Backend không thấy LLM key** → `docker compose exec backend env | grep LLM`
   để xác nhận biến đã được inject.
+- **`Embedding failed — falling back to keyword search`** trong log backend
+  → chat model của bạn không phục vụ embedding endpoint (rất phổ biến với
+  9Router / OpenRouter / vLLM chat-only). Set `EMBEDDING_BASE_URL` /
+  `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` trong `.env` trỏ đúng vào embedding
+  provider (ví dụ OpenAI `text-embedding-3-small`), xoá volume index cũ
+  (`docker compose down -v`) và `docker compose up -d --build`. Kiểm tra bằng
+  `curl https://api.example.com/ | jq .has_embedding` — phải trả `true`.
+- **`dimensions` param bị reject** (HTTP 400 từ embedding endpoint) → provider
+  không hỗ trợ custom dim (BGE / e5 / Ollama / nhiều router). Bỏ trống
+  `EMBEDDING_DIMENSIONS` để server tự chọn native dim.

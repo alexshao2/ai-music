@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.knowledge import _Doc, all_chunks, chunk_doc
-from app.services.vector_store import Chunk, VectorStore, corpus_hash
+from app.services.vector_store import Chunk, VectorStore, corpus_hash, embedding_config_hash
 
 client = TestClient(app)
 
@@ -210,6 +210,37 @@ class TestVectorStore:
         store.set_embeddings(vecs)
         results = store.search(vecs[0], k=100)
         assert len(results) == 3
+
+    def test_embedding_config_hash_changes_with_model(self) -> None:
+        h1 = embedding_config_hash("text-embedding-3-small", "https://api.openai.com/v1", 1536)
+        h2 = embedding_config_hash("bge-large-en", "https://api.openai.com/v1", 1536)
+        h3 = embedding_config_hash("text-embedding-3-small", "https://other.example/v1", 1536)
+        h4 = embedding_config_hash("text-embedding-3-small", "https://api.openai.com/v1", 1024)
+        h5 = embedding_config_hash("text-embedding-3-small", "https://api.openai.com/v1", None)
+        assert h1 != h2  # model changed
+        assert h1 != h3  # base_url changed
+        assert h1 != h4  # dimensions changed
+        assert h1 != h5  # dim unset vs set
+        # Same inputs → same hash (deterministic)
+        assert h1 == embedding_config_hash(
+            "text-embedding-3-small", "https://api.openai.com/v1", 1536
+        )
+
+    def test_config_hash_persists_across_save_load(self) -> None:
+        """Saved index must round-trip config_hash so cache can be invalidated."""
+        chunks = self._make_chunks(3)
+        vecs = self._random_embeddings(3, dim=8)
+        store = VectorStore(chunks=chunks, stored_hash="corpus-abc", config_hash="cfg-xyz")
+        store.set_embeddings(vecs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "test_index"
+            store.save(path)
+            loaded = VectorStore.load(path)
+
+        assert loaded is not None
+        assert loaded.stored_hash == "corpus-abc"
+        assert loaded.config_hash == "cfg-xyz"
 
 
 # ---------------------------------------------------------------------------

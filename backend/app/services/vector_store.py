@@ -50,6 +50,7 @@ class VectorStore:
 
     chunks: list[Chunk] = field(default_factory=list)
     stored_hash: str = ""  # corpus hash at build time
+    config_hash: str = ""  # embedding config hash (model|base_url|dim) at build time
     _embeddings: np.ndarray | None = None  # shape (n_chunks, dim)
     _norms: np.ndarray | None = None  # precomputed L2 norms
 
@@ -111,6 +112,7 @@ class VectorStore:
             embeddings=self._embeddings,
             meta=np.array([meta_json]),
             corpus_hash=np.array([self.stored_hash]),
+            config_hash=np.array([self.config_hash]),
         )
         log.info("Vector store saved to %s (%d chunks)", path, len(self.chunks))
 
@@ -138,12 +140,16 @@ class VectorStore:
                 for m in meta
             ]
             stored_hash = str(data["corpus_hash"][0]) if "corpus_hash" in data else ""
-            store = cls(chunks=chunks, stored_hash=stored_hash)
+            config_hash = str(data["config_hash"][0]) if "config_hash" in data else ""
+            store = cls(chunks=chunks, stored_hash=stored_hash, config_hash=config_hash)
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             norms = np.maximum(norms, 1e-10)
             store._embeddings = embeddings / norms
             store._norms = norms
-            log.info("Vector store loaded from %s (%d chunks, hash=%s)", npz_path, len(chunks), stored_hash[:8])
+            log.info(
+                "Vector store loaded from %s (%d chunks, corpus=%s, config=%s)",
+                npz_path, len(chunks), stored_hash[:8], config_hash[:8] or "n/a",
+            )
             return store
         except Exception:
             log.exception("Failed to load vector store from %s", npz_path)
@@ -155,4 +161,16 @@ def corpus_hash(chunks: list[Chunk]) -> str:
     h = hashlib.sha256()
     for c in sorted(chunks, key=lambda x: (x.doc_path, x.char_offset)):
         h.update(c.text_for_embedding.encode())
+    return h.hexdigest()[:16]
+
+
+def embedding_config_hash(model: str, base_url: str | None, dimensions: int | None) -> str:
+    """Hash the embedding configuration so a changed model/endpoint/dim invalidates
+    a cached index even when chunk text is unchanged.
+
+    Keeping this separate from ``corpus_hash`` makes the two failure modes —
+    corpus drift vs. infra change — independently diagnosable in logs.
+    """
+    h = hashlib.sha256()
+    h.update(f"{model}|{base_url or ''}|{dimensions or ''}".encode())
     return h.hexdigest()[:16]

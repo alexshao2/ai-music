@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,28 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_tokens: int = 1500
     llm_timeout_sec: float = 180.0
+
+    # Embedding endpoint — separate from chat/LLM because many providers (OpenAI
+    # compat routers, vLLM, Ollama, ...) expose embedding models under a
+    # different route / API key / quota than chat models. All four fields are
+    # optional; each independently falls back to the `llm_*` equivalent when
+    # unset, so users who already had a single LLM_* config keep working.
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
+    embedding_model: str | None = None
+    # Leave unset (None or 0) to let the provider pick its native dimension.
+    # OpenAI text-embedding-3-* honour a requested output dimension; others
+    # (e.g. BGE, e5) ignore this and always return their native size.
+    embedding_dimensions: int | None = None
+
+    @field_validator("embedding_dimensions", mode="before")
+    @classmethod
+    def _blank_dim_is_none(cls, v: object) -> object:
+        # docker-compose expands `${EMBEDDING_DIMENSIONS:-}` to an empty string
+        # when the user hasn't set it, which pydantic rejects for `int | None`.
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     # Legacy fallbacks (still respected so older .env files keep working).
     openai_api_key: str | None = None
@@ -61,6 +84,31 @@ class Settings(BaseSettings):
     @property
     def has_llm(self) -> bool:
         return bool(self.effective_api_key and self.effective_base_url)
+
+    # --- Embedding resolution (each field falls back to its LLM counterpart) ---
+
+    @property
+    def effective_embedding_api_key(self) -> str | None:
+        return self.embedding_api_key or self.effective_api_key
+
+    @property
+    def effective_embedding_base_url(self) -> str | None:
+        return self.embedding_base_url or self.effective_base_url
+
+    @property
+    def effective_embedding_model(self) -> str:
+        # Chat model is useless for the /embeddings endpoint, so don't fall back
+        # to `llm_model` here — pick a sane OpenAI-compatible default instead.
+        return self.embedding_model or "text-embedding-3-small"
+
+    @property
+    def effective_embedding_dimensions(self) -> int | None:
+        dim = self.embedding_dimensions
+        return dim if dim and dim > 0 else None
+
+    @property
+    def has_embedding(self) -> bool:
+        return bool(self.effective_embedding_api_key and self.effective_embedding_base_url)
 
 
 settings = Settings()
