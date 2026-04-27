@@ -81,8 +81,9 @@
 ## Retrieval (knowledge base)
 
 - M0: keyword matching đơn giản (title + tags) — đủ cho prototype.
-- M1: chunk các markdown theo heading, embed (text-embedding-3-small hoặc tương đương), lưu vào FAISS/Chroma local.
-- Council mỗi turn truy xuất top-K passages liên quan, đính kèm vào system prompt của persona tương ứng.
+- **M1 (current)**: chunk markdown theo `##`/`###` headings → embed via `text-embedding-3-small` → numpy cosine similarity search. Index persisted as `.npz` dưới `backend/app/data/index/`. Keyword fallback tự động khi không có API key.
+- Council mỗi turn truy xuất top-K **chunk-level** passages liên quan, đính kèm vào system prompt của persona tương ứng.
+- Endpoint `/knowledge/rebuild-index` để rebuild index khi corpus thay đổi.
 
 ## Suno bridge
 

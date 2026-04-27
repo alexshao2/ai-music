@@ -11,11 +11,13 @@
 
 ## M1 — RAG thực sự
 
-- [ ] Chunk markdown theo heading.
-- [ ] Embed (text-embedding-3-small hoặc local model).
-- [ ] FAISS hoặc Chroma index, persistent under `backend/app/data/index/`.
-- [ ] `/knowledge/search?q=...` trả top-K passages có score.
-- [ ] Council mỗi turn tự retrieve dựa trên `expertise_tags`.
+- [x] Chunk markdown theo heading (`chunk_doc()` splits by `##`/`###`).
+- [x] Embed (text-embedding-3-small via OpenAI-compatible API).
+- [x] Numpy cosine similarity index, persistent under `backend/app/data/index/` (`.npz`).
+- [x] `/knowledge/search?q=...` trả top-K **chunk-level** passages có cosine score.
+- [x] Council mỗi turn tự retrieve dựa trên `expertise_tags` (via `_retrieve_for()`).
+- [x] Keyword fallback khi không có API key (backward-compatible).
+- [x] `/knowledge/rebuild-index` endpoint để rebuild index thủ công.
 
 ## M2 — Multi-agent debate
 
