@@ -11,7 +11,10 @@ from app.config import settings as _settings
 
 _settings.llm_api_key = None
 _settings.llm_base_url = None
+_settings.embedding_api_key = None
+_settings.embedding_base_url = None
 _settings.openai_api_key = None
 _settings.anthropic_api_key = None
 
 assert not _settings.has_llm, "Tests must run without an LLM key configured."
+assert not _settings.has_embedding, "Tests must run without an embedding key configured."
