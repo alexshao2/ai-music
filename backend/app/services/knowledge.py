@@ -25,13 +25,27 @@ import frontmatter
 
 from app.config import settings
 from app.schemas import KnowledgeChunk
-from app.services.vector_store import Chunk, VectorStore, corpus_hash
+from app.services.vector_store import (
+    Chunk,
+    VectorStore,
+    corpus_hash,
+    embedding_config_hash,
+)
 
 log = logging.getLogger(__name__)
 
 # Module-level singleton — built lazily on first vector search.
 _store: VectorStore | None = None
 _store_hash: str | None = None
+_store_config_hash: str | None = None
+
+
+def _current_config_hash() -> str:
+    return embedding_config_hash(
+        settings.effective_embedding_model,
+        settings.effective_embedding_base_url,
+        settings.effective_embedding_dimensions,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +200,16 @@ def _index_path() -> Path:
 
 
 def _ensure_index() -> VectorStore | None:
-    """Build or load the vector index if embeddings are available."""
-    global _store, _store_hash  # noqa: PLW0603
+    """Build or load the vector index if embeddings are available.
+
+    Cache validity is keyed by BOTH the corpus hash (chunk texts) and the
+    embedding config hash (model | base_url | dim). Changing EMBEDDING_MODEL
+    / EMBEDDING_BASE_URL / EMBEDDING_DIMENSIONS therefore triggers a
+    re-embed even when knowledge files are untouched — avoiding stale
+    vectors that would either crash the cosine matmul (shape mismatch) or
+    silently return results from a different semantic space.
+    """
+    global _store, _store_hash, _store_config_hash  # noqa: PLW0603
 
     from app.services import embeddings as emb_svc
 
@@ -198,19 +220,38 @@ def _ensure_index() -> VectorStore | None:
     if not chunks:
         return None
     current_hash = corpus_hash(chunks)
+    current_cfg = _current_config_hash()
 
     # Already built and up-to-date
-    if _store is not None and _store_hash == current_hash:
+    if (
+        _store is not None
+        and _store_hash == current_hash
+        and _store_config_hash == current_cfg
+    ):
         return _store
 
     # Try loading from disk
     idx_path = _index_path()
     loaded = VectorStore.load(idx_path)
-    if loaded is not None and loaded.stored_hash == current_hash:
+    if (
+        loaded is not None
+        and loaded.stored_hash == current_hash
+        and loaded.config_hash == current_cfg
+    ):
         _store = loaded
         _store_hash = current_hash
-        log.info("Loaded vector index from disk (%d chunks, hash=%s)", loaded.size, current_hash[:8])
+        _store_config_hash = current_cfg
+        log.info(
+            "Loaded vector index from disk (%d chunks, corpus=%s, config=%s)",
+            loaded.size, current_hash[:8], current_cfg[:8],
+        )
         return _store
+    if loaded is not None:
+        log.info(
+            "Disk index stale (corpus %s vs %s, config %s vs %s) — rebuilding",
+            loaded.stored_hash[:8], current_hash[:8],
+            (loaded.config_hash or "n/a")[:8], current_cfg[:8],
+        )
 
     # Build from scratch
     log.info("Building vector index for %d chunks...", len(chunks))
@@ -221,10 +262,11 @@ def _ensure_index() -> VectorStore | None:
         log.exception("Embedding failed — falling back to keyword search")
         return None
 
-    store = VectorStore(chunks=chunks, stored_hash=current_hash)
+    store = VectorStore(chunks=chunks, stored_hash=current_hash, config_hash=current_cfg)
     store.set_embeddings(vectors)
     _store = store
     _store_hash = current_hash
+    _store_config_hash = current_cfg
     try:
         store.save(idx_path)
     except Exception:
@@ -235,9 +277,10 @@ def _ensure_index() -> VectorStore | None:
 
 def rebuild_index() -> int:
     """Force rebuild the vector index. Returns chunk count."""
-    global _store, _store_hash  # noqa: PLW0603
+    global _store, _store_hash, _store_config_hash  # noqa: PLW0603
     _store = None
     _store_hash = None
+    _store_config_hash = None
     # Delete disk cache so _ensure_index() builds from scratch
     idx_path = _index_path()
     npz_path = Path(f"{idx_path}.npz")
@@ -252,10 +295,11 @@ def rebuild_index() -> int:
 
 def reload() -> int:
     """Reload docs from disk and invalidate the vector index."""
-    global _store, _store_hash  # noqa: PLW0603
+    global _store, _store_hash, _store_config_hash  # noqa: PLW0603
     all_docs.cache_clear()
     _store = None
     _store_hash = None
+    _store_config_hash = None
     return len(all_docs())
 
 
