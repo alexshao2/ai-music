@@ -89,6 +89,62 @@ def test_compose_stream_stub():
     assert fetched.status_code == 200
 
 
+def test_compose_stream_emits_keepalive_on_slow_producer(monkeypatch):
+    """SSE keepalive comments must flow when the council generator stalls.
+
+    Reproduces the Cloudflare Tunnel issue where personas taking 100s+ to
+    emit a real event caused the edge to drop the HTTP/2 stream. We stub
+    `council_svc.compose_stream` to sleep longer than the keepalive interval
+    and verify at least one ``: keepalive`` comment appears before the next
+    real event.
+    """
+    import time
+
+    from app.routers import council as router_mod
+    from app.services import council as council_svc
+
+    def slow_events():
+        yield {"type": "persona_started", "role": "theorist", "name": "Music Theorist", "index": 0, "total": 1}
+        time.sleep(0.3)  # > 3x SSE_KEEPALIVE_SECONDS below, forces keepalives
+        yield {"type": "persona_completed", "role": "theorist", "name": "Music Theorist", "message": "ok", "contributions": {}}
+
+    monkeypatch.setattr(council_svc, "compose_stream", lambda _brief, refine=True: slow_events())
+    monkeypatch.setattr(router_mod, "SSE_KEEPALIVE_SECONDS", 0.08)
+
+    body = Brief(mood="hoài niệm", genre="ballad", language="vi").model_dump()
+    with client.stream("POST", "/council/compose/stream", json=body) as r:
+        assert r.status_code == 200
+        raw = b"".join(r.iter_bytes()).decode("utf-8", errors="replace")
+
+    assert ": keepalive" in raw, "SSE keepalive comment missing — CF will drop long streams"
+    assert '"type": "persona_completed"' in raw
+    # Keepalive must arrive between started and completed, not only at the end.
+    started_at = raw.find("persona_started")
+    keepalive_at = raw.find(": keepalive")
+    completed_at = raw.find("persona_completed", started_at + 1)
+    assert started_at < keepalive_at < completed_at
+
+
+def test_compose_stream_surfaces_producer_exception(monkeypatch):
+    """Exceptions in the sync generator should become a structured error event,
+    not a torn HTTP/2 stream."""
+    from app.services import council as council_svc
+
+    def boom(_brief, refine=True):
+        yield {"type": "persona_started", "role": "theorist", "name": "T", "index": 0, "total": 1}
+        raise RuntimeError("persona explosion")
+
+    monkeypatch.setattr(council_svc, "compose_stream", boom)
+
+    body = Brief(mood="x", genre="y", language="vi").model_dump()
+    with client.stream("POST", "/council/compose/stream", json=body) as r:
+        assert r.status_code == 200
+        raw = b"".join(r.iter_bytes()).decode("utf-8", errors="replace")
+
+    assert '"type": "error"' in raw
+    assert "persona explosion" in raw
+
+
 def test_knowledge_search():
     # Knowledge base should have at least a few seeded docs.
     r = client.get("/knowledge/topics")
