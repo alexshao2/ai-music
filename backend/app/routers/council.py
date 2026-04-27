@@ -5,7 +5,7 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from app.schemas import Brief, SongDraft
@@ -80,8 +80,8 @@ def compose_stream(brief: Brief, fast: bool = False) -> StreamingResponse:
 @router.post("/compose/quality", response_model=SongDraft)
 def compose_quality(
     brief: Brief,
-    target_score: float = 7.5,
-    max_revisions: int = 2,
+    target_score: float = Query(default=7.5, ge=0, le=10),
+    max_revisions: int = Query(default=2, ge=0, le=10),
 ) -> SongDraft:
     """Compose with quality gate: auto-revise until score >= target.
 
