@@ -223,10 +223,13 @@ def _ensure_index() -> VectorStore | None:
 
     store = VectorStore(chunks=chunks, stored_hash=current_hash)
     store.set_embeddings(vectors)
-    store.save(idx_path)
     _store = store
     _store_hash = current_hash
-    log.info("Vector index built and saved (%d chunks)", len(chunks))
+    try:
+        store.save(idx_path)
+    except Exception:
+        log.warning("Failed to persist vector index to disk — using in-memory only")
+    log.info("Vector index built (%d chunks)", len(chunks))
     return _store
 
 
