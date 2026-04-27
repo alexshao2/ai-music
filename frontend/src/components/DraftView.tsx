@@ -1,7 +1,16 @@
-import type { SongDraft } from "@/lib/api";
+"use client";
+
+import { useState } from "react";
+import type { QualityEvaluation, SongDraft } from "@/lib/api";
+import { EvaluationPanel } from "./EvaluationPanel";
+import { QualityBadge } from "./QualityBadge";
 import { SunoLauncher } from "./SunoLauncher";
 
 export function DraftView({ draft }: { draft: SongDraft }) {
+  const [evaluation, setEvaluation] = useState<QualityEvaluation | null>(
+    draft.evaluation ?? null,
+  );
+
   return (
     <div className="space-y-6">
       <header className="flex items-baseline justify-between">
@@ -12,9 +21,30 @@ export function DraftView({ draft }: { draft: SongDraft }) {
             {draft.tempo_bpm} BPM · {draft.brief.duration_sec}s
           </p>
         </div>
+        {evaluation && <QualityBadge evaluation={evaluation} />}
       </header>
 
-      <SunoLauncher draft={draft} />
+      <EvaluationPanel draft={draft} onEvaluationChange={setEvaluation} />
+
+      {evaluation?.verdict === "RELEASE" ? (
+        <SunoLauncher draft={draft} />
+      ) : (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <p className="text-sm text-amber-400">
+            {evaluation
+              ? `Bài chưa đạt chuẩn xuất bản (${evaluation.verdict}). Chạy đánh giá A&R hoặc sử dụng Compose Quality để auto-revise.`
+              : "Chưa đánh giá chất lượng. Bấm \"Chạy đánh giá A&R\" bên trên."}
+          </p>
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs text-white/50 hover:text-white/70">
+              Vẫn muốn gửi sang Suno?
+            </summary>
+            <div className="mt-2">
+              <SunoLauncher draft={draft} />
+            </div>
+          </details>
+        </div>
+      )}
 
       <section>
         <h3 className="font-display text-xl text-gold mb-2">Cấu trúc</h3>

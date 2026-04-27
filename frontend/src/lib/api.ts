@@ -46,6 +46,33 @@ export type SongDraft = {
   suno_prompt?: { style: string; lyrics: string; title: string } | null;
   suno_output?: SunoOutput | null;
   compliance: Record<string, boolean>;
+  evaluation?: QualityEvaluation | null;
+};
+
+export type QualityScores = {
+  melody_catchiness: number;
+  lyric_quality: number;
+  harmonic_sophistication: number;
+  structural_coherence: number;
+  production_direction: number;
+  genre_authenticity: number;
+  overall: number;
+};
+
+export type QualityEvaluation = {
+  scores: QualityScores;
+  verdict: "RELEASE" | "REVISE" | "REJECT";
+  feedback: string;
+  revision_notes: string;
+  attempt: number;
+  max_attempts_reached: boolean;
+};
+
+export type PromptValidation = {
+  valid: boolean;
+  score: number;
+  issues: string[];
+  suggestions: string[];
 };
 
 export type KnowledgeChunk = {
@@ -111,6 +138,29 @@ export const api = {
       negative_tags?: string[];
       producer_brief?: string;
     }>(`/suno/launch/${id}`),
+  composeQuality: (
+    b: Brief,
+    opts?: { targetScore?: number; maxRevisions?: number },
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.targetScore != null) params.set("target_score", String(opts.targetScore));
+    if (opts?.maxRevisions != null) params.set("max_revisions", String(opts.maxRevisions));
+    const qs = params.toString();
+    return http<SongDraft>(
+      `/council/compose/quality${qs ? `?${qs}` : ""}`,
+      { method: "POST", body: JSON.stringify(b) },
+    );
+  },
+  evaluateDraft: (id: string) =>
+    http<QualityEvaluation>(`/studio/drafts/${id}/evaluate`, {
+      method: "POST",
+    }),
+  draftQuality: (id: string) =>
+    http<QualityEvaluation>(`/studio/drafts/${id}/quality`),
+  validatePrompt: (id: string) =>
+    http<PromptValidation>(`/studio/drafts/${id}/validate-prompt`, {
+      method: "POST",
+    }),
 };
 
 // ---- Streaming compose ----

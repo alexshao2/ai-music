@@ -5,7 +5,7 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from app.schemas import Brief, SongDraft
@@ -75,6 +75,24 @@ def compose_stream(brief: Brief, fast: bool = False) -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+@router.post("/compose/quality", response_model=SongDraft)
+def compose_quality(
+    brief: Brief,
+    target_score: float = Query(default=7.5, ge=0, le=10),
+    max_revisions: int = Query(default=2, ge=0, le=10),
+) -> SongDraft:
+    """Compose with quality gate: auto-revise until score >= target.
+
+    Query params:
+      target_score  — minimum overall score to pass (default 7.5).
+      max_revisions — maximum extra revision attempts (default 2).
+    """
+    draft = council_svc.compose_with_quality_gate(
+        brief, target_score=target_score, max_revisions=max_revisions,
+    )
+    return store.save(draft)
 
 
 def _sse(payload: dict[str, Any]) -> bytes:
