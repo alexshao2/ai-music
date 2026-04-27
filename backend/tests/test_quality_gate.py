@@ -423,10 +423,11 @@ class TestQualityGateEndpoints:
 class TestSchemaValidation:
     def test_quality_scores_clamped_by_pydantic(self) -> None:
         import pytest
+        from pydantic import ValidationError
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             QualityScores(melody_catchiness=11)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             QualityScores(lyric_quality=-1)
 
     def test_quality_scores_defaults(self) -> None:
@@ -442,8 +443,9 @@ class TestSchemaValidation:
 
     def test_quality_evaluation_invalid_verdict(self) -> None:
         import pytest
+        from pydantic import ValidationError
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             QualityEvaluation(verdict="INVALID")
 
     def test_song_draft_evaluation_optional(self) -> None:
