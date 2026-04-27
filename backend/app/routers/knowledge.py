@@ -30,3 +30,11 @@ def get_doc(path: str) -> KnowledgeChunk:
 @router.post("/reload")
 def reload() -> dict[str, int]:
     return {"loaded": kb.reload()}
+
+
+@router.post("/rebuild-index")
+def rebuild_index() -> dict[str, object]:
+    """Re-chunk and re-embed all knowledge files. Requires an embedding key."""
+    n_docs = kb.reload()
+    n_chunks = kb.rebuild_index()
+    return {"docs": n_docs, "chunks": n_chunks, "vector_search": n_chunks > 0}
