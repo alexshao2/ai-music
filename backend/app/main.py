@@ -36,6 +36,7 @@ def root() -> dict[str, object]:
         "name": "ai-music",
         "version": "0.1.0",
         "has_llm": settings.has_llm,
+        "has_embedding": settings.has_embedding,
         "knowledge_dir": str(settings.knowledge_path),
         "endpoints": ["/council", "/knowledge", "/studio", "/suno", "/docs"],
     }
