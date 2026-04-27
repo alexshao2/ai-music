@@ -28,6 +28,23 @@ class LLMUnavailableError(RuntimeError):
     """Raised when callers ask for an LLM completion but no key is configured."""
 
 
+class LLMResponseTruncatedError(ValueError):
+    """Raised when the model hit ``max_tokens`` before finishing its response.
+
+    The partial text is attached so callers can still inspect/log it, but a
+    truncated JSON object is virtually never parseable, so we surface this as
+    an explicit parse-style failure that :func:`chat_json`'s retry loop can
+    distinguish from merely malformed output.
+    """
+
+    def __init__(self, partial: str) -> None:
+        super().__init__(
+            "LLM response truncated at max_tokens (finish_reason=length). "
+            "Bump LLM_MAX_TOKENS or shorten the prompt."
+        )
+        self.partial = partial
+
+
 @lru_cache(maxsize=1)
 def _client() -> OpenAI:
     if not settings.has_llm:
@@ -77,16 +94,34 @@ def chat(
     # the full text — callers don't need to know it streamed.
     kwargs["stream"] = True
     parts: list[str] = []
+    finish_reason: str | None = None
     stream = client.chat.completions.create(**kwargs)
     for chunk in stream:
         if not chunk.choices:
             continue
-        delta = chunk.choices[0].delta
+        choice = chunk.choices[0]
+        delta = choice.delta
         piece = getattr(delta, "content", None)
         if piece:
             parts.append(piece)
-    text = "".join(parts).strip()
-    return _strip_reasoning(text)
+        # OpenAI-compat streams surface the final stop reason only on the last
+        # chunk; everything before it is None. Keep the last non-None value.
+        this_reason = getattr(choice, "finish_reason", None)
+        if this_reason:
+            finish_reason = this_reason
+    text = _strip_reasoning("".join(parts).strip())
+    if finish_reason == "length":
+        # Truncation is almost always catastrophic for JSON callers. Surface it
+        # explicitly so the caller logs "max_tokens" rather than a mysterious
+        # "No JSON object found in LLM output".
+        log.warning(
+            "LLM response truncated at max_tokens=%s (model=%s, len=%d chars)",
+            kwargs.get("max_tokens"),
+            kwargs.get("model"),
+            len(text),
+        )
+        raise LLMResponseTruncatedError(text)
+    return text
 
 
 def chat_json(
@@ -119,31 +154,46 @@ def chat_json(
         + " Inside string values, never include unescaped newlines or unescaped double quotes —"
         + ' use \\n for newlines and \\" for embedded quotes.'
     )
-    raw = _chat_with_optional_json_mode(
-        system=strict_system,
-        user=user,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        model=model,
-    )
     try:
-        return _extract_json(raw)
-    except ValueError as first_exc:
-        log.warning("LLM JSON parse failed on first attempt: %s", first_exc)
-        retry_user = (
-            user
-            + "\n\n[Retry] Your previous response was not valid JSON."
-            + f" Parser error: {first_exc!s}.\n"
-            + "Reply again with ONLY a valid JSON object. No commentary, no markdown."
-        )
         raw = _chat_with_optional_json_mode(
             system=strict_system,
-            user=retry_user,
-            temperature=0.2,  # tighter sampling on retry
+            user=user,
+            temperature=temperature,
             max_tokens=max_tokens,
             model=model,
         )
-        return _extract_json(raw)
+    except LLMResponseTruncatedError as first_exc:
+        # The first call hit max_tokens. Retry with a larger budget AND a
+        # nudge to be more concise — otherwise the second call usually
+        # truncates in the same place.
+        first_exc_for_retry: Exception = first_exc
+    else:
+        try:
+            return _extract_json(raw)
+        except ValueError as first_exc:
+            log.warning("LLM JSON parse failed on first attempt: %s", first_exc)
+            first_exc_for_retry = first_exc
+
+    retry_user = (
+        user
+        + "\n\n[Retry] Your previous response was not valid JSON."
+        + f" Parser error: {first_exc_for_retry!s}.\n"
+        + "Reply again with ONLY a valid JSON object. No commentary, no markdown."
+        + " Keep every string value concise — do not pad with filler — so the"
+        + " whole JSON fits in the token budget."
+    )
+    # Give the retry 50% more headroom (capped) when the first try ran out.
+    retry_max = max_tokens or settings.llm_max_tokens
+    if isinstance(first_exc_for_retry, LLMResponseTruncatedError):
+        retry_max = min(int(retry_max * 1.5), 8000)
+    raw = _chat_with_optional_json_mode(
+        system=strict_system,
+        user=retry_user,
+        temperature=0.2,  # tighter sampling on retry
+        max_tokens=retry_max,
+        model=model,
+    )
+    return _extract_json(raw)
 
 
 def _chat_with_optional_json_mode(

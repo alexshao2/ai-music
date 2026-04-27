@@ -16,7 +16,14 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_model: str = "gpt-4o-mini"
     llm_temperature: float = 0.7
-    llm_max_tokens: int = 1500
+    # Upper bound on completion tokens per persona turn. Lyricist + Arranger
+    # schemas emit a single JSON blob that routinely exceeds 1500 tokens (full
+    # Vietnamese lyrics with markers, prosody notes, per-section textures,
+    # drum/bass maps, etc.). A low limit silently truncates JSON mid-string,
+    # which fails `_extract_json` and collapses that persona to the stub —
+    # leaving the user with placeholder lyrics ("[chờ Lyricist tinh chỉnh]").
+    # 4000 fits current schemas comfortably; bump via LLM_MAX_TOKENS if needed.
+    llm_max_tokens: int = 4000
     llm_timeout_sec: float = 180.0
 
     # Embedding endpoint — separate from chat/LLM because many providers (OpenAI
