@@ -935,7 +935,8 @@ def compose_with_quality_gate(
     appended to the brief's notes and the council re-runs (up to
     *max_revisions* extra attempts).
 
-    Returns the best draft produced across all attempts.
+    Returns the first draft that passes the quality gate, or the best
+    draft produced if no attempt passes.
     """
     best_draft: SongDraft | None = None
     best_score: float = -1.0
@@ -954,7 +955,7 @@ def compose_with_quality_gate(
             best_draft = draft
             best_score = score
 
-        if verdict == "RELEASE" or score >= target_score:
+        if score >= target_score:
             log.info(
                 "Quality gate PASSED on attempt %d (score=%.1f, verdict=%s)",
                 attempt, score, verdict,
