@@ -190,18 +190,40 @@ export type CouncilStreamEvent =
       contributions: Record<string, unknown>;
     }
   | { type: "refine_failed"; role: string; name: string; error: string }
-  | { type: "draft"; draft: SongDraft }
+  | {
+      type: "revision_started";
+      attempt: number;
+      max_attempts: number;
+      target_score: number;
+      brief_notes: string;
+    }
+  | {
+      type: "revision_completed";
+      attempt: number;
+      score: number;
+      verdict: "RELEASE" | "REVISE" | "REJECT";
+      passed: boolean;
+      revision_brief: string;
+    }
+  | { type: "revision_failed"; attempt: number; error: string }
+  | { type: "draft"; draft: SongDraft; best_attempt?: number }
   | { type: "error"; message: string }
   | { type: "done" };
 
-export async function composeStream(
+/** Per-event ``attempt`` field — present on every event yielded by the
+ *  quality-stream variant so the UI can group council turns by revision
+ *  attempt. ``CouncilStreamEvent`` keeps the field optional so the plain
+ *  ``composeStream`` path doesn't have to set it. */
+export type CouncilStreamEventWithAttempt = CouncilStreamEvent & {
+  attempt?: number;
+};
+
+async function _readSSE(
+  url: string,
   brief: Brief,
-  opts: { fast?: boolean; signal?: AbortSignal },
-  onEvent: (event: CouncilStreamEvent) => void,
+  signal: AbortSignal | undefined,
+  onEvent: (event: CouncilStreamEventWithAttempt) => void,
 ): Promise<void> {
-  const url = `${API_BASE}/council/compose/stream${
-    opts.fast ? "?fast=true" : ""
-  }`;
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -209,7 +231,7 @@ export async function composeStream(
       accept: "text/event-stream",
     },
     body: JSON.stringify(brief),
-    signal: opts.signal,
+    signal,
     cache: "no-store",
   });
   if (!res.ok || !res.body) {
@@ -232,11 +254,47 @@ export async function composeStream(
       for (const line of block.split("\n")) {
         if (!line.startsWith("data: ")) continue;
         try {
-          onEvent(JSON.parse(line.slice(6)) as CouncilStreamEvent);
+          onEvent(
+            JSON.parse(line.slice(6)) as CouncilStreamEventWithAttempt,
+          );
         } catch (err) {
           console.warn("compose stream: bad JSON", line, err);
         }
       }
     }
   }
+}
+
+export async function composeStream(
+  brief: Brief,
+  opts: { fast?: boolean; signal?: AbortSignal },
+  onEvent: (event: CouncilStreamEvent) => void,
+): Promise<void> {
+  const url = `${API_BASE}/council/compose/stream${
+    opts.fast ? "?fast=true" : ""
+  }`;
+  await _readSSE(url, brief, opts.signal, (e) => onEvent(e));
+}
+
+export async function composeQualityStream(
+  brief: Brief,
+  opts: {
+    fast?: boolean;
+    targetScore?: number;
+    maxRevisions?: number;
+    signal?: AbortSignal;
+  },
+  onEvent: (event: CouncilStreamEventWithAttempt) => void,
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (opts.fast) params.set("fast", "true");
+  if (opts.targetScore != null)
+    params.set("target_score", String(opts.targetScore));
+  if (opts.maxRevisions != null)
+    params.set("max_revisions", String(opts.maxRevisions));
+  const qs = params.toString();
+  const url = `${API_BASE}/council/compose/quality/stream${
+    qs ? `?${qs}` : ""
+  }`;
+  await _readSSE(url, brief, opts.signal, onEvent);
 }

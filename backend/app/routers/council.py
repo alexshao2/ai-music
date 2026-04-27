@@ -5,7 +5,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
 from fastapi import APIRouter, Query
@@ -60,6 +60,37 @@ def compose(brief: Brief, fast: bool = False) -> SongDraft:
     return store.save(draft)
 
 
+@router.post("/compose/quality/stream")
+def compose_quality_stream(
+    brief: Brief,
+    target_score: float = Query(default=7.5, ge=0, le=10),
+    max_revisions: int = Query(default=2, ge=0, le=10),
+    fast: bool = False,
+) -> StreamingResponse:
+    """Stream the council with an auto-revise quality gate.
+
+    Like :func:`compose_stream` but wraps each council run in a
+    ``while score < target`` loop (capped at ``max_revisions`` extra
+    attempts). The frontend receives ``revision_started`` /
+    ``revision_completed`` markers around each council pass plus an
+    ``attempt`` field on every persona/refine event so it can group them.
+    """
+    return StreamingResponse(
+        _quality_stream_with_keepalive(
+            brief,
+            target_score=target_score,
+            max_revisions=max_revisions,
+            refine=not fast,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.post("/compose/stream")
 def compose_stream(brief: Brief, fast: bool = False) -> StreamingResponse:
     """Run the council and stream events as Server-Sent Events.
@@ -84,13 +115,17 @@ def compose_stream(brief: Brief, fast: bool = False) -> StreamingResponse:
     )
 
 
-def _sync_event_stream(brief: Brief, *, refine: bool) -> Iterator[bytes]:
-    """Drive the (synchronous) council generator and yield SSE-encoded bytes.
+def _encode_council_events(
+    events: Iterator[dict[str, Any]],
+) -> Iterator[bytes]:
+    """Encode a council event generator as SSE bytes, persisting any draft.
 
-    Factored out so the async wrapper below can run it in a worker thread
-    without having to know anything about council internals.
+    Shared by both the plain compose stream and the quality-gated variant —
+    both emit the same event shapes (with the latter adding ``revision_*``
+    markers and an ``attempt`` field) and want the same store-save behaviour
+    on the final ``draft`` event.
     """
-    for event in council_svc.compose_stream(brief, refine=refine):
+    for event in events:
         payload: dict[str, Any] = dict(event)
         if event.get("type") == "draft":
             draft: SongDraft = event["draft"]  # type: ignore[assignment]
@@ -100,26 +135,54 @@ def _sync_event_stream(brief: Brief, *, refine: bool) -> Iterator[bytes]:
     yield _sse({"type": "done"})
 
 
-async def _stream_with_keepalive(
-    brief: Brief, *, refine: bool
-) -> AsyncIterator[bytes]:
-    """Bridge the sync council generator to async with periodic keepalives.
+def _sync_event_stream(brief: Brief, *, refine: bool) -> Iterator[bytes]:
+    """Drive the synchronous compose generator and yield SSE-encoded bytes."""
+    yield from _encode_council_events(
+        council_svc.compose_stream(brief, refine=refine)
+    )
 
-    Runs :func:`_sync_event_stream` in a worker thread and pushes its frames
-    onto an ``asyncio.Queue``. The consumer here either forwards a real frame
-    or — if nothing arrives within ``SSE_KEEPALIVE_SECONDS`` — emits a
+
+def _sync_quality_event_stream(
+    brief: Brief,
+    *,
+    target_score: float,
+    max_revisions: int,
+    refine: bool,
+) -> Iterator[bytes]:
+    """Drive the quality-gated compose generator and yield SSE-encoded bytes."""
+    yield from _encode_council_events(
+        council_svc.compose_quality_stream(
+            brief,
+            target_score=target_score,
+            max_revisions=max_revisions,
+            refine=refine,
+        )
+    )
+
+
+async def _bytes_stream_with_keepalive(
+    sync_iter_factory: Callable[[], Iterator[bytes]],
+    *,
+    log_label: str,
+) -> AsyncIterator[bytes]:
+    """Bridge any sync byte generator to async with periodic keepalives.
+
+    Runs the factory in a worker thread and pushes its frames onto an
+    ``asyncio.Queue``. The consumer here either forwards a real frame or — if
+    nothing arrives within ``SSE_KEEPALIVE_SECONDS`` — emits a
     ``: keepalive\\n\\n`` comment, which SSE clients ignore but proxies see as
-    fresh bytes.
+    fresh bytes. Cloudflare Tunnel and similar HTTP edges close idle responses
+    around 100s; council persona turns can run 120s+ on slow LLM routers.
     """
     queue: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
     def producer() -> None:
         try:
-            for frame in _sync_event_stream(brief, refine=refine):
+            for frame in sync_iter_factory():
                 loop.call_soon_threadsafe(queue.put_nowait, frame)
         except BaseException as exc:  # noqa: BLE001
-            log.exception("council compose stream producer crashed")
+            log.exception("%s producer crashed", log_label)
             loop.call_soon_threadsafe(queue.put_nowait, exc)
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
@@ -147,6 +210,35 @@ async def _stream_with_keepalive(
         # response, otherwise a late `put_nowait` would hit a dead loop.
         with contextlib.suppress(Exception):
             await producer_task
+
+
+async def _stream_with_keepalive(
+    brief: Brief, *, refine: bool
+) -> AsyncIterator[bytes]:
+    async for frame in _bytes_stream_with_keepalive(
+        lambda: _sync_event_stream(brief, refine=refine),
+        log_label="council compose stream",
+    ):
+        yield frame
+
+
+async def _quality_stream_with_keepalive(
+    brief: Brief,
+    *,
+    target_score: float,
+    max_revisions: int,
+    refine: bool,
+) -> AsyncIterator[bytes]:
+    async for frame in _bytes_stream_with_keepalive(
+        lambda: _sync_quality_event_stream(
+            brief,
+            target_score=target_score,
+            max_revisions=max_revisions,
+            refine=refine,
+        ),
+        log_label="council quality stream",
+    ):
+        yield frame
 
 
 @router.post("/compose/quality", response_model=SongDraft)

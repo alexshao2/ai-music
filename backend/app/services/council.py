@@ -1179,6 +1179,177 @@ def _compose_stream_llm(
     yield {"type": "done"}
 
 
+def compose_quality_stream(
+    brief: Brief,
+    *,
+    target_score: float = 7.5,
+    max_revisions: int = 2,
+    refine: bool = True,
+) -> Iterator[dict[str, Any]]:
+    """Stream the council with an auto-revise quality gate.
+
+    Wraps :func:`compose_stream` in a ``while score < target`` loop (capped at
+    ``max_revisions`` extra attempts). After Critic chấm xong mỗi vòng, nếu
+    điểm chưa đạt thì append ``revision_brief`` của Critic vào ``brief.notes``
+    và chạy lại toàn bộ hội đồng — đây là cách hội đồng "tự sửa" giữa các
+    vòng. Best draft seen is the one finally yielded as ``draft``.
+
+    Event shapes (additive on top of compose_stream's set):
+
+    - ``revision_started`` ``{attempt, max_attempts, target_score, brief_notes}``
+    - All ``persona_*`` / ``refine_*`` events from the inner stream are
+      forwarded **with an extra ``attempt`` field** so the UI can group them.
+    - ``revision_completed`` ``{attempt, score, verdict, passed, revision_brief}``
+    - One final ``draft`` ``{draft: best_draft, best_attempt}`` and ``done``.
+
+    In stub mode the deterministic draft cannot improve, so we run the inner
+    stream exactly once and emit ``revision_completed`` with ``passed=true``
+    regardless of score.
+    """
+    if not settings.has_llm:
+        yield {
+            "type": "revision_started",
+            "attempt": 1,
+            "max_attempts": 1,
+            "target_score": target_score,
+            "brief_notes": brief.notes or "",
+        }
+        for event in _compose_stream_stub(brief):
+            if event.get("type") == "draft":
+                draft: SongDraft = event["draft"]  # type: ignore[assignment]
+                yield {
+                    "type": "revision_completed",
+                    "attempt": 1,
+                    "score": (
+                        draft.evaluation.scores.overall if draft.evaluation else 0.0
+                    ),
+                    "verdict": draft.evaluation.verdict if draft.evaluation else "REVISE",
+                    "passed": True,
+                    "revision_brief": "",
+                }
+                yield {"type": "draft", "draft": draft, "best_attempt": 1}
+                yield {"type": "done"}
+                return
+            if event.get("type") == "done":
+                continue
+            yield {**event, "attempt": 1}
+        return
+
+    max_attempts = max_revisions + 1
+    best_draft: SongDraft | None = None
+    best_score: float = -1.0
+    best_attempt: int = 1
+    current_brief = brief
+
+    for attempt in range(1, max_attempts + 1):
+        yield {
+            "type": "revision_started",
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "target_score": target_score,
+            "brief_notes": current_brief.notes or "",
+        }
+
+        attempt_draft: SongDraft | None = None
+        # Inner stream is sync, exception-free in normal paths but emits its
+        # own ``error`` events when the whole council fails. Forward them
+        # untouched so the client can render the failure of an individual
+        # attempt without dropping the outer connection.
+        try:
+            inner = _compose_stream_llm(current_brief, refine=refine)
+            for event in inner:
+                etype = event.get("type")
+                if etype == "draft":
+                    attempt_draft = event["draft"]  # type: ignore[assignment]
+                    continue
+                if etype == "done":
+                    continue
+                yield {**event, "attempt": attempt}
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Quality stream attempt %d crashed", attempt)
+            yield {
+                "type": "revision_failed",
+                "attempt": attempt,
+                "error": str(exc),
+            }
+            break
+
+        if attempt_draft is None:
+            # Inner stream completed without producing a draft (every persona
+            # failed and ``error`` was emitted). Stop the loop — retrying the
+            # same broken endpoint won't help.
+            yield {
+                "type": "revision_failed",
+                "attempt": attempt,
+                "error": "Council produced no draft on this attempt",
+            }
+            break
+
+        score = (
+            attempt_draft.evaluation.scores.overall
+            if attempt_draft.evaluation is not None
+            else 0.0
+        )
+        verdict = (
+            attempt_draft.evaluation.verdict
+            if attempt_draft.evaluation is not None
+            else "REVISE"
+        )
+        revision_brief_text = (
+            attempt_draft.evaluation.revision_notes
+            if attempt_draft.evaluation is not None
+            else ""
+        )
+        if attempt_draft.evaluation is not None:
+            attempt_draft.evaluation.attempt = attempt
+
+        if score > best_score:
+            best_draft = attempt_draft
+            best_score = score
+            best_attempt = attempt
+
+        passed = score >= target_score
+        yield {
+            "type": "revision_completed",
+            "attempt": attempt,
+            "score": score,
+            "verdict": verdict,
+            "passed": passed,
+            "revision_brief": revision_brief_text,
+        }
+
+        if passed:
+            log.info("Quality gate PASSED on attempt %d (score=%.1f)", attempt, score)
+            break
+        if attempt >= max_attempts:
+            log.warning(
+                "Quality gate exhausted %d attempts. Best score=%.1f",
+                max_attempts, best_score,
+            )
+            if best_draft is not None and best_draft.evaluation is not None:
+                best_draft.evaluation.max_attempts_reached = True
+            break
+
+        # Feed Critic's revision_brief back into the next attempt's brief so
+        # personas see exactly which gaps to close.
+        current_brief = current_brief.model_copy(update={
+            "notes": (
+                f"{current_brief.notes or ''}\n\n"
+                f"[HỘI ĐỒNG REVISION #{attempt}, score={score:.1f}]: "
+                f"{revision_brief_text}"
+            ).strip(),
+        })
+
+    if best_draft is not None:
+        yield {"type": "draft", "draft": best_draft, "best_attempt": best_attempt}
+    else:
+        yield {
+            "type": "error",
+            "message": "Quality stream produced no usable draft across all attempts",
+        }
+    yield {"type": "done"}
+
+
 def _compose_stream_stub(brief: Brief) -> Iterator[dict[str, Any]]:
     """Emit the same event shape from the deterministic stub.
 

@@ -4,13 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import {
   api,
   composeStream,
+  composeQualityStream,
   type Brief,
   type SongDraft,
 } from "@/lib/api";
 import {
   applyEvent,
   CouncilTimeline,
-  type PersonaState,
+  type CouncilAttempt,
 } from "@/components/CouncilTimeline";
 
 type Props = {
@@ -33,11 +34,11 @@ export function BriefForm({ onDraft }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [questions, setQuestions] = useState<string[] | null>(null);
   const [fastMode, setFastMode] = useState(false);
+  const [qualityMode, setQualityMode] = useState(false);
+  const [targetScore, setTargetScore] = useState(7.5);
+  const [maxRevisions, setMaxRevisions] = useState(2);
   const [progress, setProgress] = useState<string | null>(null);
-  const [council, setCouncil] = useState<{
-    states: Record<string, PersonaState>;
-    refineStates: Record<string, PersonaState>;
-  }>({ states: {}, refineStates: {} });
+  const [attempts, setAttempts] = useState<CouncilAttempt[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const startedAtRef = useRef<number | null>(null);
@@ -85,11 +86,13 @@ export function BriefForm({ onDraft }: Props) {
     setBusy(true);
     setStreaming(true);
     setError(null);
-    setCouncil({ states: {}, refineStates: {} });
+    setAttempts([]);
     setElapsed(0);
     startedAtRef.current = Date.now();
     setProgress(
-      fastMode
+      qualityMode
+        ? `Chế độ tự sửa — tối đa ${maxRevisions + 1} vòng hội đồng cho đến khi score ≥ ${targetScore.toFixed(1)}. Mỗi vòng ~5–7 phút trên LLM chậm.`
+        : fastMode
         ? "Chế độ nhanh — ~3-4 phút. Theo dõi từng vị nói trực tiếp bên dưới."
         : "Chế độ đầy đủ — ~5-7 phút (gồm tinh chỉnh sau Critic). Bạn sẽ thấy từng vị phát biểu real-time."
     );
@@ -105,21 +108,35 @@ export function BriefForm({ onDraft }: Props) {
       };
       let receivedDraft: SongDraft | null = null;
       let streamError: string | null = null;
-      await composeStream(
-        payload,
-        { fast: fastMode, signal: ctrl.signal },
-        (ev) => {
-          if (ev.type === "draft") {
-            receivedDraft = ev.draft;
-            return;
-          }
-          if (ev.type === "error") {
-            streamError = ev.message;
-            return;
-          }
-          setCouncil((c) => applyEvent(c.states, c.refineStates, ev));
-        },
-      );
+      const handleEvent = (ev: Parameters<Parameters<typeof composeQualityStream>[2]>[0]) => {
+        if (ev.type === "draft") {
+          receivedDraft = ev.draft;
+          return;
+        }
+        if (ev.type === "error") {
+          streamError = ev.message;
+          return;
+        }
+        setAttempts((prev) => applyEvent(prev, ev));
+      };
+      if (qualityMode) {
+        await composeQualityStream(
+          payload,
+          {
+            fast: fastMode,
+            targetScore,
+            maxRevisions,
+            signal: ctrl.signal,
+          },
+          handleEvent,
+        );
+      } else {
+        await composeStream(
+          payload,
+          { fast: fastMode, signal: ctrl.signal },
+          handleEvent,
+        );
+      }
       if (receivedDraft) {
         onDraft(receivedDraft);
       } else if (streamError) {
@@ -237,10 +254,54 @@ export function BriefForm({ onDraft }: Props) {
             type="checkbox"
             checked={fastMode}
             onChange={(e) => setFastMode(e.target.checked)}
+            disabled={qualityMode}
             className="accent-accent"
           />
           Chế độ nhanh (bỏ qua tinh chỉnh sau Critic)
         </label>
+        <label className="flex items-center gap-2 text-xs text-white/70 select-none">
+          <input
+            type="checkbox"
+            checked={qualityMode}
+            onChange={(e) => {
+              setQualityMode(e.target.checked);
+              if (e.target.checked) setFastMode(false);
+            }}
+            className="accent-accent"
+          />
+          Tự sửa đến khi đạt điểm
+        </label>
+        {qualityMode && (
+          <div className="flex items-center gap-2 text-xs text-white/70">
+            <label className="flex items-center gap-1">
+              Điểm mục tiêu
+              <input
+                type="number"
+                min={0}
+                max={10}
+                step={0.5}
+                value={targetScore}
+                onChange={(e) =>
+                  setTargetScore(Math.min(10, Math.max(0, Number(e.target.value || 0))))
+                }
+                className="w-16 rounded bg-white/5 border border-white/10 px-1.5 py-0.5"
+              />
+            </label>
+            <label className="flex items-center gap-1">
+              Số vòng sửa tối đa
+              <input
+                type="number"
+                min={0}
+                max={5}
+                value={maxRevisions}
+                onChange={(e) =>
+                  setMaxRevisions(Math.min(5, Math.max(0, Number(e.target.value || 0))))
+                }
+                className="w-12 rounded bg-white/5 border border-white/10 px-1.5 py-0.5"
+              />
+            </label>
+          </div>
+        )}
         {error && <span className="text-sm text-red-400">{error}</span>}
       </div>
 
@@ -248,12 +309,8 @@ export function BriefForm({ onDraft }: Props) {
         <p className="text-xs text-white/60 italic">{progress}</p>
       )}
 
-      {(streaming || Object.keys(council.states).length > 0) && (
-        <CouncilTimeline
-          states={council.states}
-          refineStates={council.refineStates}
-          elapsedSec={elapsed}
-        />
+      {(streaming || attempts.length > 0) && (
+        <CouncilTimeline attempts={attempts} elapsedSec={elapsed} />
       )}
 
       {questions && questions.length > 0 && (
