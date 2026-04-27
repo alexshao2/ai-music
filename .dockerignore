@@ -1,0 +1,42 @@
+# Repo-level dockerignore for the root build context used by docker-compose.
+# Per-service builds also have their own .dockerignore files inside backend/ and frontend/.
+
+.git/
+.github/
+.vscode/
+.idea/
+.DS_Store
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+
+# Node
+**/node_modules/
+**/.next/
+**/out/
+**/dist/
+**/build/
+**/*.tsbuildinfo
+**/.turbo/
+
+# Env / secrets — never bake these into images.
+.env
+.env.local
+.env.*.local
+**/.env
+**/.env.local
+**/.env.*.local
+
+# Local backend session/index data (regenerated at runtime).
+backend/app/data/sessions/
+backend/app/data/index/
+
+# Logs
+**/*.log
