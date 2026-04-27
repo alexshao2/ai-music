@@ -204,10 +204,10 @@ def _ensure_index() -> VectorStore | None:
     # Try loading from disk
     idx_path = _index_path()
     loaded = VectorStore.load(idx_path)
-    if loaded is not None and loaded.size == len(chunks):
+    if loaded is not None and loaded.stored_hash == current_hash:
         _store = loaded
         _store_hash = current_hash
-        log.info("Loaded vector index from disk (%d chunks)", loaded.size)
+        log.info("Loaded vector index from disk (%d chunks, hash=%s)", loaded.size, current_hash[:8])
         return _store
 
     # Build from scratch
@@ -219,7 +219,7 @@ def _ensure_index() -> VectorStore | None:
         log.exception("Embedding failed — falling back to keyword search")
         return None
 
-    store = VectorStore(chunks=chunks)
+    store = VectorStore(chunks=chunks, stored_hash=current_hash)
     store.set_embeddings(vectors)
     store.save(idx_path)
     _store = store
@@ -233,6 +233,10 @@ def rebuild_index() -> int:
     global _store, _store_hash  # noqa: PLW0603
     _store = None
     _store_hash = None
+    # Delete disk cache so _ensure_index() builds from scratch
+    idx_path = _index_path()
+    npz_path = Path(f"{idx_path}.npz")
+    npz_path.unlink(missing_ok=True)
     store = _ensure_index()
     return store.size if store else 0
 

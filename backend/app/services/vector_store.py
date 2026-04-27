@@ -49,6 +49,7 @@ class VectorStore:
     """In-memory vector index with numpy cosine similarity search."""
 
     chunks: list[Chunk] = field(default_factory=list)
+    stored_hash: str = ""  # corpus hash at build time
     _embeddings: np.ndarray | None = None  # shape (n_chunks, dim)
     _norms: np.ndarray | None = None  # precomputed L2 norms
 
@@ -109,6 +110,7 @@ class VectorStore:
             path,
             embeddings=self._embeddings,
             meta=np.array([meta_json]),
+            corpus_hash=np.array([self.stored_hash]),
         )
         log.info("Vector store saved to %s (%d chunks)", path, len(self.chunks))
 
@@ -135,12 +137,13 @@ class VectorStore:
                 )
                 for m in meta
             ]
-            store = cls(chunks=chunks)
+            stored_hash = str(data["corpus_hash"][0]) if "corpus_hash" in data else ""
+            store = cls(chunks=chunks, stored_hash=stored_hash)
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             norms = np.maximum(norms, 1e-10)
             store._embeddings = embeddings / norms
             store._norms = norms
-            log.info("Vector store loaded from %s (%d chunks)", npz_path, len(chunks))
+            log.info("Vector store loaded from %s (%d chunks, hash=%s)", npz_path, len(chunks), stored_hash[:8])
             return store
         except Exception:
             log.exception("Failed to load vector store from %s", npz_path)

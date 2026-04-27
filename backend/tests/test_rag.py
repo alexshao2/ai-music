@@ -158,7 +158,7 @@ class TestVectorStore:
     def test_save_and_load(self) -> None:
         chunks = self._make_chunks(5)
         vecs = self._random_embeddings(5, dim=16)
-        store = VectorStore(chunks=chunks)
+        store = VectorStore(chunks=chunks, stored_hash="abc123")
         store.set_embeddings(vecs)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -169,9 +169,27 @@ class TestVectorStore:
         assert loaded is not None
         assert loaded.size == 5
         assert loaded.chunks[0].doc_path == "doc0.md"
+        assert loaded.stored_hash == "abc123"
         # Search should work on loaded store
         results = loaded.search(vecs[0], k=2)
         assert len(results) == 2
+
+    def test_stale_hash_not_reused(self) -> None:
+        """Index with wrong hash should not match a different corpus hash."""
+        chunks = self._make_chunks(3)
+        vecs = self._random_embeddings(3, dim=8)
+        store = VectorStore(chunks=chunks, stored_hash="old_hash")
+        store.set_embeddings(vecs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "test_index"
+            store.save(path)
+            loaded = VectorStore.load(path)
+
+        assert loaded is not None
+        assert loaded.stored_hash == "old_hash"
+        # Should NOT match a new corpus hash
+        assert loaded.stored_hash != "new_hash"
 
     def test_load_nonexistent(self) -> None:
         assert VectorStore.load(Path("/tmp/nonexistent_index_xyz")) is None
