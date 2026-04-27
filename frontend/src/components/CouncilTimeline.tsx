@@ -23,9 +23,22 @@ export type CouncilAttempt = {
   /** ``revision_brief`` from Critic — what the next attempt should fix. */
   revisionBrief?: string;
   targetScore?: number;
-  /** Set on the failing terminal attempt when the gate ran out of retries. */
-  exhausted?: boolean;
+  /** Total attempts the gate is willing to run (carried from the
+   *  ``revision_started`` event so we can tell intermediate failures apart
+   *  from the terminal one without guessing from list length). */
+  maxAttempts?: number;
 };
+
+/** True only on the final attempt of a quality run that did NOT pass. Used
+ *  to render the "HẾT LƯỢT" badge instead of "CHƯA ĐẠT — sẽ sửa" for
+ *  intermediate failed attempts. */
+function isExhausted(a: CouncilAttempt): boolean {
+  return (
+    a.passed === false
+    && a.maxAttempts != null
+    && a.attempt >= a.maxAttempts
+  );
+}
 
 const ROLE_ORDER = [
   "theorist",
@@ -85,7 +98,7 @@ function AttemptBlock({
         cls: "bg-emerald-500/20 text-emerald-300",
       };
     }
-    if (attempt.passed === false && attempt.exhausted) {
+    if (attempt.passed === false && isExhausted(attempt)) {
       return {
         label: `HẾT LƯỢT — best ${attempt.score?.toFixed(1) ?? "?"}`,
         cls: "bg-amber-500/20 text-amber-300",
@@ -188,7 +201,7 @@ export function CouncilTimeline({
   elapsedSec: number;
 }) {
   const showAttemptHeaders = attempts.length > 1 || attempts.some(
-    (a) => a.passed != null || a.exhausted,
+    (a) => a.passed != null,
   );
   return (
     <div className="rounded-xl border border-white/10 bg-plum/30 p-4 space-y-3">
@@ -217,12 +230,17 @@ function formatElapsed(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-function emptyAttempt(attempt: number, targetScore?: number): CouncilAttempt {
+function emptyAttempt(
+  attempt: number,
+  targetScore?: number,
+  maxAttempts?: number,
+): CouncilAttempt {
   return {
     attempt,
     states: {},
     refineStates: {},
     targetScore,
+    maxAttempts,
   };
 }
 
@@ -257,30 +275,39 @@ export function applyEvent(
     case "revision_started": {
       const existing = attempts.findIndex((a) => a.attempt === ev.attempt);
       if (existing === -1) {
-        attempts.push(emptyAttempt(ev.attempt, ev.target_score));
+        attempts.push(
+          emptyAttempt(ev.attempt, ev.target_score, ev.max_attempts),
+        );
       } else {
         attempts[existing] = {
           ...attempts[existing],
           targetScore: ev.target_score,
+          maxAttempts: ev.max_attempts,
         };
       }
       break;
     }
     case "revision_completed":
+      // Don't compute the "exhausted" badge here — we don't yet know if a
+      // ``revision_started`` for attempt N+1 is coming. ``isExhausted()``
+      // derives it on render from ``maxAttempts`` carried by
+      // ``revision_started``.
       patchAttempt(ev.attempt, (a) => ({
         ...a,
         score: ev.score,
         verdict: ev.verdict,
         passed: ev.passed,
         revisionBrief: ev.revision_brief,
-        exhausted: !ev.passed && ev.attempt >= attempts.length, // tentative
       }));
       break;
     case "revision_failed":
+      // Treat a hard failure as a terminal attempt: clamp ``maxAttempts`` to
+      // the current attempt so ``isExhausted`` returns true even if no
+      // ``revision_started`` for the next attempt arrives.
       patchAttempt(ev.attempt, (a) => ({
         ...a,
         passed: false,
-        exhausted: true,
+        maxAttempts: ev.attempt,
       }));
       break;
     case "persona_started":
