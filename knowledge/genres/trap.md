@@ -23,7 +23,7 @@ Biến thể: **drill** (UK/Chicago — slower, darker), **rage** (Playboi Carti
 | Time sig | 4/4 (~99%) |
 | Key | Minor dominant ~85% (Cm, Em, Fm, Gm, Am, Bbm); major rất hiếm |
 | Vocal range | Rap C3–E4; melodic trap A3–E5 (auto-tune, Young Thug) |
-| Master loudness | −5 đến −7 LUFS (VERY loud, aggressive) |
+| Master loudness | −7 đến −5 LUFS (VERY loud, aggressive) |
 | 808 sub | Core element — pitched, gliding, distorted; 30–60 Hz fundamental |
 
 ## 2. Cấu trúc bài (form)
