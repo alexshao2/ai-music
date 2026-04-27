@@ -50,7 +50,13 @@ function ScoreBar({ label, score, weight }: { label: string; score: number; weig
   );
 }
 
-export function EvaluationPanel({ draft }: { draft: SongDraft }) {
+export function EvaluationPanel({
+  draft,
+  onEvaluationChange,
+}: {
+  draft: SongDraft;
+  onEvaluationChange?: (evaluation: QualityEvaluation) => void;
+}) {
   const [evaluation, setEvaluation] = useState<QualityEvaluation | null>(
     draft.evaluation ?? null,
   );
@@ -63,6 +69,7 @@ export function EvaluationPanel({ draft }: { draft: SongDraft }) {
     try {
       const result = await api.evaluateDraft(draft.id);
       setEvaluation(result);
+      onEvaluationChange?.(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Lỗi không xác định");
     } finally {

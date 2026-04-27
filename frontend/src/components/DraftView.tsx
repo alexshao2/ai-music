@@ -1,9 +1,16 @@
-import type { SongDraft } from "@/lib/api";
+"use client";
+
+import { useState } from "react";
+import type { QualityEvaluation, SongDraft } from "@/lib/api";
 import { EvaluationPanel } from "./EvaluationPanel";
 import { QualityBadge } from "./QualityBadge";
 import { SunoLauncher } from "./SunoLauncher";
 
 export function DraftView({ draft }: { draft: SongDraft }) {
+  const [evaluation, setEvaluation] = useState<QualityEvaluation | null>(
+    draft.evaluation ?? null,
+  );
+
   return (
     <div className="space-y-6">
       <header className="flex items-baseline justify-between">
@@ -14,18 +21,18 @@ export function DraftView({ draft }: { draft: SongDraft }) {
             {draft.tempo_bpm} BPM · {draft.brief.duration_sec}s
           </p>
         </div>
-        {draft.evaluation && <QualityBadge evaluation={draft.evaluation} />}
+        {evaluation && <QualityBadge evaluation={evaluation} />}
       </header>
 
-      <EvaluationPanel draft={draft} />
+      <EvaluationPanel draft={draft} onEvaluationChange={setEvaluation} />
 
-      {draft.evaluation?.verdict === "RELEASE" ? (
+      {evaluation?.verdict === "RELEASE" ? (
         <SunoLauncher draft={draft} />
       ) : (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
           <p className="text-sm text-amber-400">
-            {draft.evaluation
-              ? `Bài chưa đạt chuẩn xuất bản (${draft.evaluation.verdict}). Chạy đánh giá A&R hoặc sử dụng Compose Quality để auto-revise.`
+            {evaluation
+              ? `Bài chưa đạt chuẩn xuất bản (${evaluation.verdict}). Chạy đánh giá A&R hoặc sử dụng Compose Quality để auto-revise.`
               : "Chưa đánh giá chất lượng. Bấm \"Chạy đánh giá A&R\" bên trên."}
           </p>
           <details className="mt-2">

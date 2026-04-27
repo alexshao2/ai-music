@@ -143,8 +143,8 @@ export const api = {
     opts?: { targetScore?: number; maxRevisions?: number },
   ) => {
     const params = new URLSearchParams();
-    if (opts?.targetScore) params.set("target_score", String(opts.targetScore));
-    if (opts?.maxRevisions) params.set("max_revisions", String(opts.maxRevisions));
+    if (opts?.targetScore != null) params.set("target_score", String(opts.targetScore));
+    if (opts?.maxRevisions != null) params.set("max_revisions", String(opts.maxRevisions));
     const qs = params.toString();
     return http<SongDraft>(
       `/council/compose/quality${qs ? `?${qs}` : ""}`,
