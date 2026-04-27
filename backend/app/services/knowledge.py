@@ -182,7 +182,7 @@ def all_chunks() -> list[Chunk]:
 # ---------------------------------------------------------------------------
 
 def _index_path() -> Path:
-    return settings.knowledge_path.parent / "backend" / "app" / "data" / "index" / "knowledge"
+    return Path(__file__).resolve().parent.parent / "data" / "index" / "knowledge"
 
 
 def _ensure_index() -> VectorStore | None:
@@ -195,6 +195,8 @@ def _ensure_index() -> VectorStore | None:
         return None
 
     chunks = all_chunks()
+    if not chunks:
+        return None
     current_hash = corpus_hash(chunks)
 
     # Already built and up-to-date
