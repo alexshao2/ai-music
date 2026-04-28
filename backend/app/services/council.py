@@ -35,6 +35,11 @@ from app.schemas import (
 )
 from app.services import knowledge as knowledge_svc
 from app.services import llm as llm_svc
+from app.services.lyric_quality import (
+    LyricIssue,
+    format_issues_for_retry,
+    validate_lyrics,
+)
 
 log = logging.getLogger(__name__)
 
@@ -420,7 +425,12 @@ COUNCIL_PERSONAS: tuple[Persona, ...] = (
             "- Mỗi section đếm syllable theo Composer.\n"
             "- Mỗi 4-6 dòng có ÍT NHẤT 1 chi tiết cụ thể từ imagery-locales-vn.md.\n"
             "- TRÍCH DẪN Composer's peak_note + peak_section, kiểm thanh âm tiết tại peak.\n"
-            "- LIỆT KÊ trong cliches_avoided 2-3 cụm bạn đã thay.\n\n"
+            "- prosody_notes PHẢI có ÍT NHẤT 1 dòng theo format: "
+            "'peak <NOTE> ở <section> on \"<syllable>\" (<thanh>) — OK|FIX'. "
+            "Critic sẽ tự động chấm 0 nếu không có dòng này.\n"
+            "- LIỆT KÊ trong cliches_avoided 2-3 cụm bạn đã thay.\n"
+            "- imagery_locales_used PHẢI có ≥ 2 entry cụ thể (tên đường, địa danh, vật "
+            "cụ thể) — không 'mùa xuân', 'gió mát', 'trời xanh' (chung chung).\n\n"
             "TUYỆT ĐỐI TRÁNH (DON'T):\n"
             "- Không placeholder. Không '[chờ Lyricist]'.\n"
             "- Không cliché trong cliche-bank-vn.md (đặc biệt 'trái tim tan vỡ', 'mưa rơi').\n"
@@ -828,8 +838,17 @@ COUNCIL_PERSONAS: tuple[Persona, ...] = (
             "  chord_progression_concrete: mỗi section có ≥4 chord cụ thể (Em, không 'i')?\n"
             "  hook_recipe_specified: Composer có hook_recipe_used trong 8 recipes?\n"
             "  vietnamese_tone_at_peak_ok: âm tiết tại peak_note có thanh ngang/sắc/ngã?\n"
+            "    → Nếu Lyricist prosody_notes KHÔNG trích dẫn cụ thể peak note + "
+            "syllable + thanh (ví dụ 'peak F5 ở chorus on \"tư\" (ngang) — OK'), "
+            "tự động đánh vietnamese_tone_at_peak_ok=FALSE và trừ lyric_quality 2 điểm "
+            "(không có bằng chứng = không đạt).\n"
             "  lyric_uses_concrete_imagery: ≥2 chi tiết Việt từ imagery-locales-vn.md?\n"
+            "    → Nếu imagery_locales_used < 2 hoặc chỉ có từ chung chung "
+            "('mùa', 'đêm', 'trời', 'gió'), đánh FALSE và trừ lyric_quality 1 điểm.\n"
             "  cliche_audit_passed: không có cliché trong cliche-bank-vn.md?\n"
+            "    → Nếu lyric chứa 'trái tim tan vỡ' / 'mưa rơi (mùa buồn)' / "
+            "'lá vàng rơi' / 'lạc lõng giữa đám đông' / 'bóng hình em' / "
+            "'yêu em đến mãi', đánh FALSE và trừ lyric_quality 2 điểm.\n"
             "  dynamic_arc_has_strip_down: Arranger có ≥1 section level ≤4?\n"
             "  final_chorus_distinct: chorus_final khác chorus_1 (modulate / counter / layer)?\n"
             "  suno_style_string_within_200: Producer style string ≤200 ký tự?\n"
@@ -1384,14 +1403,50 @@ def _by_role(role: str) -> Persona:
     raise KeyError(role)
 
 
+# Pinned knowledge docs that MUST be in the Lyricist context for Vietnamese
+# briefs. RAG sometimes substitutes lower-ranked "related" chunks when the
+# query is dominated by genre keywords (e.g. "V-pop ballad"), causing the
+# Lyricist to miss the imagery/cliché rules that make VN lyrics feel local.
+# Pinning guarantees the two most load-bearing references show up every
+# time for language='vi'.
+_LYRICIST_VI_PINNED_PATHS: tuple[str, ...] = (
+    "lyrics/imagery-locales-vn.md",
+    "lyrics/cliche-bank-vn.md",
+)
+# Hard cap on pinned excerpt length to keep the prompt within token budget.
+# knowledge_svc.get() returns the FULL body; these reference docs are long.
+_PINNED_EXCERPT_CHARS = 2000
+
+
 def _retrieve_for(persona: Persona, brief: Brief, k: int = 4) -> list[str]:
-    """Pull RAG chunks for a persona. Combines expertise_tags + brief keywords."""
+    """Pull RAG chunks for a persona. Combines expertise_tags + brief keywords.
+
+    For the Lyricist on Vietnamese briefs we additionally force-pin
+    :data:`_LYRICIST_VI_PINNED_PATHS` at the TOP of the context so the
+    model always sees concrete VN imagery + the cliché ban list, even when
+    RAG ranks other chunks higher.
+    """
     query = " ".join(
         [*persona.expertise_tags, brief.genre, brief.mood]
     )
     chunks = knowledge_svc.search(query, k=k)
     excerpts: list[str] = []
+    pinned_paths: set[str] = set()
+
+    if persona.role == "lyricist" and brief.language.lower() == "vi":
+        for path in _LYRICIST_VI_PINNED_PATHS:
+            pinned = knowledge_svc.get(path)
+            if pinned is None:
+                continue
+            body = pinned.excerpt[:_PINNED_EXCERPT_CHARS]
+            excerpts.append(
+                f"### {pinned.title} ({pinned.path}) — PINNED\n{body}"
+            )
+            pinned_paths.add(pinned.path)
+
     for c in chunks:
+        if c.path in pinned_paths:
+            continue
         excerpts.append(f"### {c.title} ({c.path})\n{c.excerpt}")
     return excerpts
 
@@ -1421,16 +1476,29 @@ def _run_persona_with_retry(
     *,
     max_attempts: int = 2,
 ) -> dict[str, Any] | None:
-    """Run a persona's turn, retrying once on transient failures.
+    """Run a persona's turn, retrying on transient failures or quality issues.
 
-    Returns the persona's structured response, or ``None`` if every attempt
-    failed (caller decides whether to substitute a stub for that persona or
-    abandon the LLM compose entirely).
+    Beyond catching exceptions, Lyricist output is validated against
+    :mod:`app.services.lyric_quality` — if the model returns a placeholder
+    or an empty section we retry with a concrete "fix these" nudge instead
+    of accepting half-baked lyrics. Other personas retry on exceptions only.
+
+    Returns the persona's structured response (possibly from a retry), or
+    ``None`` if every attempt failed (caller decides whether to substitute a
+    stub for that persona or abandon the LLM compose entirely).
     """
     last_exc: Exception | None = None
+    last_issues: list[LyricIssue] = []
     for attempt in range(1, max_attempts + 1):
+        nudge = format_issues_for_retry(last_issues) if last_issues else ""
         try:
-            return _run_persona(persona, brief, prior_turns, prior_contributions)
+            result = _run_persona(
+                persona,
+                brief,
+                prior_turns,
+                prior_contributions,
+                retry_nudge=nudge,
+            )
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             log.warning(
@@ -1440,6 +1508,29 @@ def _run_persona_with_retry(
                 max_attempts,
                 exc,
             )
+            continue
+
+        if persona.role == "lyricist":
+            contributions = result.get("contributions") if isinstance(result, dict) else None
+            issues = validate_lyrics(contributions or {}, language=brief.language)
+            if issues and attempt < max_attempts:
+                last_issues = issues
+                log.warning(
+                    "Lyricist attempt %d/%d failed validation (%d issues) — retrying",
+                    attempt,
+                    max_attempts,
+                    len(issues),
+                )
+                continue
+            if issues:
+                # Last attempt still bad — caller handles the placeholder fallback.
+                log.warning(
+                    "Lyricist exhausted %d attempts; %d validation issues remain",
+                    max_attempts,
+                    len(issues),
+                )
+                return None
+        return result
     log.error("Persona %s gave up after %d attempts: %s", persona.role, max_attempts, last_exc)
     return None
 
@@ -1485,9 +1576,20 @@ def _run_persona(
     brief: Brief,
     prior_turns: list[CouncilTurn],
     prior_contributions: dict[str, Any],
+    *,
+    retry_nudge: str = "",
 ) -> dict[str, Any]:
+    """Build the persona prompt and call the LLM.
+
+    ``retry_nudge`` is an optional block appended before the task
+    instructions when we're re-running after a validator failure (e.g.
+    Lyricist placeholder detection). Empty by default so non-retry calls
+    are byte-identical to the original behaviour.
+    """
     knowledge_chunks = _retrieve_for(persona, brief)
     knowledge_block = "\n\n".join(knowledge_chunks) if knowledge_chunks else "(no chunks retrieved)"
+
+    retry_block = f"\n\n{retry_nudge}\n" if retry_nudge else ""
 
     user_prompt = f"""## Brief
 - Mood: {brief.mood}
@@ -1505,7 +1607,7 @@ def _run_persona(
 
 ## Structured contributions so far
 {_format_contributions(prior_contributions)}
-
+{retry_block}
 ## Your task
 Write your turn. Reply with a single JSON object matching this schema EXACTLY:
 

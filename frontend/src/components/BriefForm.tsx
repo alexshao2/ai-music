@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   composeStream,
   composeQualityStream,
   type Brief,
+  type BriefOptions,
+  type GenreOption,
+  type MoodOption,
   type SongDraft,
 } from "@/lib/api";
 import {
@@ -14,13 +17,30 @@ import {
   type CouncilAttempt,
 } from "@/components/CouncilTimeline";
 
+const CUSTOM_VALUE = "__custom__";
+
+function groupBy<T, K extends string>(items: T[], key: (t: T) => K): Map<K, T[]> {
+  const out = new Map<K, T[]>();
+  for (const item of items) {
+    const k = key(item);
+    const list = out.get(k);
+    if (list) list.push(item);
+    else out.set(k, [item]);
+  }
+  return out;
+}
+
 type Props = {
   onDraft: (draft: SongDraft) => void;
 };
 
+// Default brief values. `mood` and `genre` match one of the backend's
+// picker options (see app/services/options.py) so the select defaults to
+// an actual entry instead of "Tự nhập…". If the backend genre titles ever
+// change, the form falls back to custom-input gracefully.
 const DEFAULTS: Brief = {
-  mood: "hoài niệm, dịu dàng",
-  genre: "V-pop ballad",
+  mood: "Hoài niệm, dịu dàng",
+  genre: "V-pop Ballad — Sound, Form, Idioms (2018–2025)",
   language: "vi",
   duration_sec: 210,
   references: [],
@@ -41,6 +61,9 @@ export function BriefForm({ onDraft }: Props) {
   const [attempts, setAttempts] = useState<CouncilAttempt[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [options, setOptions] = useState<BriefOptions | null>(null);
+  const [customMood, setCustomMood] = useState(false);
+  const [customGenre, setCustomGenre] = useState(false);
   const startedAtRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -57,6 +80,42 @@ export function BriefForm({ onDraft }: Props) {
   useEffect(() => {
     return () => abortRef.current?.abort();
   }, []);
+
+  // Load picker options from the backend on mount. If the request fails we
+  // silently keep the form in free-text mode (the label inputs still work).
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .briefOptions()
+      .then((opts) => {
+        if (cancelled) return;
+        setOptions(opts);
+        setCustomMood(!opts.moods.some((m) => m.label === brief.mood));
+        setCustomGenre(!opts.genres.some((g) => g.label === brief.genre));
+      })
+      .catch(() => {
+        // Leave options=null; the form falls back to free-text inputs.
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const moodGroups = useMemo(() => {
+    if (!options) return null;
+    return Array.from(
+      groupBy<MoodOption, string>(options.moods, (m) => m.group).entries(),
+    );
+  }, [options]);
+
+  const genreGroups = useMemo(() => {
+    if (!options) return null;
+    // Preserve the backend's sort order — groupBy is insertion-ordered.
+    return Array.from(
+      groupBy<GenreOption, string>(options.genres, (g) => g.group_label).entries(),
+    );
+  }, [options]);
 
   function update<K extends keyof Brief>(k: K, v: Brief[K]) {
     setBrief((b) => ({ ...b, [k]: v }));
@@ -171,19 +230,97 @@ export function BriefForm({ onDraft }: Props) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Field label="Mood">
-          <input
-            value={brief.mood}
-            onChange={(e) => update("mood", e.target.value)}
-            className="input"
-          />
+        <Field label="Mood / Tâm trạng">
+          {moodGroups ? (
+            <div className="space-y-2">
+              <select
+                value={customMood ? CUSTOM_VALUE : brief.mood}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === CUSTOM_VALUE) {
+                    setCustomMood(true);
+                    update("mood", "");
+                  } else {
+                    setCustomMood(false);
+                    update("mood", v);
+                  }
+                }}
+                className="input"
+              >
+                {moodGroups.map(([group, moods]) => (
+                  <optgroup key={group} label={group}>
+                    {moods.map((m) => (
+                      <option key={m.slug} value={m.label}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+                <option value={CUSTOM_VALUE}>Tự nhập mood khác…</option>
+              </select>
+              {customMood && (
+                <input
+                  value={brief.mood}
+                  onChange={(e) => update("mood", e.target.value)}
+                  className="input"
+                  placeholder="ví dụ: hoài niệm phai nhạt, bồi hồi ấm áp"
+                  autoFocus
+                />
+              )}
+            </div>
+          ) : (
+            <input
+              value={brief.mood}
+              onChange={(e) => update("mood", e.target.value)}
+              className="input"
+            />
+          )}
         </Field>
-        <Field label="Thể loại">
-          <input
-            value={brief.genre}
-            onChange={(e) => update("genre", e.target.value)}
-            className="input"
-          />
+        <Field label="Thể loại / Genre">
+          {genreGroups ? (
+            <div className="space-y-2">
+              <select
+                value={customGenre ? CUSTOM_VALUE : brief.genre}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === CUSTOM_VALUE) {
+                    setCustomGenre(true);
+                    update("genre", "");
+                  } else {
+                    setCustomGenre(false);
+                    update("genre", v);
+                  }
+                }}
+                className="input"
+              >
+                {genreGroups.map(([group, genres]) => (
+                  <optgroup key={group} label={group}>
+                    {genres.map((g) => (
+                      <option key={g.slug} value={g.label}>
+                        {g.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+                <option value={CUSTOM_VALUE}>Tự nhập thể loại khác…</option>
+              </select>
+              {customGenre && (
+                <input
+                  value={brief.genre}
+                  onChange={(e) => update("genre", e.target.value)}
+                  className="input"
+                  placeholder="ví dụ: V-pop ballad, indie folk, synthwave"
+                  autoFocus
+                />
+              )}
+            </div>
+          ) : (
+            <input
+              value={brief.genre}
+              onChange={(e) => update("genre", e.target.value)}
+              className="input"
+            />
+          )}
         </Field>
         <Field label="Ngôn ngữ lời">
           <select
@@ -191,10 +328,16 @@ export function BriefForm({ onDraft }: Props) {
             onChange={(e) => update("language", e.target.value)}
             className="input"
           >
-            <option value="vi">Tiếng Việt</option>
-            <option value="en">English</option>
-            <option value="ja">日本語</option>
-            <option value="ko">한국어</option>
+            {(options?.languages ?? [
+              { code: "vi", label: "Tiếng Việt" },
+              { code: "en", label: "English" },
+              { code: "ja", label: "日本語" },
+              { code: "ko", label: "한국어" },
+            ]).map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label}
+              </option>
+            ))}
           </select>
         </Field>
         <Field label="Thời lượng (giây)">

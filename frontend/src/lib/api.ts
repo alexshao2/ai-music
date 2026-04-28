@@ -91,6 +91,37 @@ export type Persona = {
   system_prompt: string;
 };
 
+// Brief picker option shapes — served by GET /council/options. Genres are
+// generated from knowledge/genres/*.md frontmatter so new cookbooks appear
+// in the UI automatically. Moods are curated in the backend module
+// app.services.options.
+export type GenreOption = {
+  slug: string;
+  label: string;
+  group: string;
+  group_label: string;
+  tags: string[];
+  knowledge_path: string;
+};
+
+export type MoodOption = {
+  slug: string;
+  label: string;
+  group: string;
+  keywords: string[];
+};
+
+export type LanguageOption = {
+  code: string;
+  label: string;
+};
+
+export type BriefOptions = {
+  genres: GenreOption[];
+  moods: MoodOption[];
+  languages: LanguageOption[];
+};
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -109,6 +140,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   personas: () => http<Persona[]>("/council/personas"),
+  briefOptions: () => http<BriefOptions>("/council/options"),
   briefIntake: (b: Brief) =>
     http<{ brief: Brief; clarifying_questions: string[] }>("/council/brief", {
       method: "POST",
