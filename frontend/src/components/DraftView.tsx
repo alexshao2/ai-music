@@ -13,13 +13,19 @@ export function DraftView({ draft }: { draft: SongDraft }) {
 
   return (
     <div className="space-y-6">
-      <header className="flex items-baseline justify-between">
-        <div>
-          <h2 className="font-display text-3xl text-accent">{draft.title}</h2>
-          <p className="text-sm text-white/60">
-            {draft.brief.genre} · {draft.brief.mood} · {draft.key} ·{" "}
-            {draft.tempo_bpm} BPM · {draft.brief.duration_sec}s
-          </p>
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-2">
+          <p className="chip-mono">draft · đã có bản nháp</p>
+          <h2 className="font-display text-3xl tracking-tight">
+            <span className="text-atelier">{draft.title}</span>
+          </h2>
+          <div className="flex flex-wrap gap-1.5">
+            <span className="chip-mono">{draft.brief.genre}</span>
+            <span className="chip-mono">{draft.brief.mood}</span>
+            <span className="chip-mono">{draft.key}</span>
+            <span className="chip-mono">{draft.tempo_bpm} BPM</span>
+            <span className="chip-mono">{draft.brief.duration_sec}s</span>
+          </div>
         </div>
         {evaluation && <QualityBadge evaluation={evaluation} />}
       </header>
@@ -47,26 +53,26 @@ export function DraftView({ draft }: { draft: SongDraft }) {
       )}
 
       <section>
-        <h3 className="font-display text-xl text-gold mb-2">Cấu trúc</h3>
+        <SectionTitle index="02">Cấu trúc</SectionTitle>
         <ol className="space-y-2">
           {draft.structure.map((s, i) => (
             <li
               key={i}
-              className="rounded-lg border border-white/10 bg-white/5 p-3"
+              className="rounded-lg border border-white/10 bg-white/[0.03] p-3"
             >
               <div className="flex items-center justify-between">
-                <span className="uppercase tracking-wide text-sm text-accent">
+                <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-white">
                   {s.section.replace("_", " ")}
                 </span>
-                <span className="text-xs text-white/50">{s.bars} ô nhịp</span>
+                <span className="chip-mono">{s.bars} ô nhịp</span>
               </div>
               {s.chords.length > 0 && (
-                <p className="mt-1 text-sm text-white/80">
-                  Hợp âm: {s.chords.join(" — ")}
+                <p className="mt-2 font-mono text-[13px] text-white/80">
+                  {s.chords.join("  —  ")}
                 </p>
               )}
               {s.notes && (
-                <p className="mt-1 text-xs text-white/60 italic">{s.notes}</p>
+                <p className="mt-1 text-xs italic text-white/60">{s.notes}</p>
               )}
             </li>
           ))}
@@ -74,31 +80,64 @@ export function DraftView({ draft }: { draft: SongDraft }) {
       </section>
 
       <section>
-        <h3 className="font-display text-xl text-gold mb-2">Lời nháp</h3>
-        <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-white/5 p-3 text-sm text-white/85">
-          {Object.entries(draft.lyrics)
-            .map(([k, v]) => `[${k}]\n${v}`)
-            .join("\n\n")}
-        </pre>
+        <SectionTitle index="03">Lời nháp</SectionTitle>
+        <div className="space-y-3">
+          {Object.entries(draft.lyrics).map(([section, text]) => (
+            <div
+              key={section}
+              className="relative rounded-lg border border-white/10 bg-ink/40 p-4 pl-12"
+            >
+              <span className="absolute left-3 top-3 font-mono text-[10px] uppercase tracking-[0.18em] text-white/45">
+                [{section}]
+              </span>
+              <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-white/85">
+                {text}
+              </pre>
+            </div>
+          ))}
+        </div>
       </section>
 
       <section>
-        <h3 className="font-display text-xl text-gold mb-2">Hội đồng phát biểu</h3>
+        <SectionTitle index="04">Hội đồng phát biểu</SectionTitle>
         <ul className="space-y-3">
           {draft.council_log.map((turn, i) => (
             <li
               key={i}
-              className="rounded-lg border border-white/10 bg-plum/40 p-3"
+              className="rounded-lg border border-white/10 bg-white/[0.03] p-4"
             >
-              <div className="text-sm font-medium text-accent">
-                {turn.persona}{" "}
-                <span className="text-white/40 text-xs">({turn.role})</span>
+              <div className="flex items-center gap-2 text-sm font-medium text-white">
+                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/45">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                {turn.persona}
+                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/40">
+                  {turn.role}
+                </span>
               </div>
-              <p className="mt-1 text-sm text-white/85">{turn.message}</p>
+              <p className="mt-1.5 text-sm text-white/85">{turn.message}</p>
             </li>
           ))}
         </ul>
       </section>
     </div>
+  );
+}
+
+function SectionTitle({
+  index,
+  children,
+}: {
+  index: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <h3 className="mb-3 flex items-baseline gap-3 font-display text-xl tracking-tight">
+      <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-gold">
+        {index}
+      </span>
+      <span className="text-white">{children}</span>
+      <span aria-hidden className="flex-1 border-t border-white/10" />
+    </h3>
   );
 }

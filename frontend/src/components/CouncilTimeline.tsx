@@ -76,11 +76,24 @@ function statusBadge(s: PersonaState["status"]): string {
     case "pending":
       return "bg-white/10 text-white/60";
     case "speaking":
-      return "bg-accent/30 text-accent animate-pulse";
+      return "bg-atelier text-ink shadow-bloom-soft";
     case "done":
       return "bg-emerald-500/20 text-emerald-300";
     case "failed":
       return "bg-red-500/20 text-red-300";
+  }
+}
+
+function nodeRing(s: PersonaState["status"]): string {
+  switch (s) {
+    case "pending":
+      return "border-white/15 bg-white/[0.03]";
+    case "speaking":
+      return "border-magenta/60 bg-magenta/10 shadow-bloom animate-pulse-glow";
+    case "done":
+      return "border-emerald-400/40 bg-emerald-500/[0.06]";
+    case "failed":
+      return "border-red-400/50 bg-red-500/[0.06]";
   }
 }
 
@@ -112,19 +125,19 @@ function AttemptBlock({
     }
     return {
       label: "Đang chạy…",
-      cls: "bg-accent/30 text-accent animate-pulse",
+      cls: "bg-atelier text-ink shadow-bloom-soft",
     };
   })();
 
   return (
-    <div className="rounded-lg border border-white/10 bg-plum/20 p-3 space-y-2">
+    <div className="rounded-lg border border-white/10 bg-ink/40 p-4 space-y-3">
       {showHeader && (
         <div className="flex items-center justify-between gap-3">
-          <span className="text-sm font-medium text-gold">
-            Vòng {attempt.attempt}
+          <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
+            ── Vòng {String(attempt.attempt).padStart(2, "0")}
           </span>
           <span
-            className={`text-[11px] uppercase tracking-wide rounded px-2 py-0.5 ${headerBadge.cls}`}
+            className={`rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] ${headerBadge.cls}`}
           >
             {headerBadge.label}
           </span>
@@ -146,17 +159,20 @@ function AttemptBlock({
           return (
             <li
               key={role}
-              className="rounded-md border border-white/10 bg-white/5 p-3"
+              className={`rounded-md border p-3 transition-colors ${nodeRing(state.status)}`}
             >
               <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-medium text-accent">
+                <div className="flex items-center gap-2 text-sm font-medium text-white">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/45">
+                    {String(ROLE_ORDER.indexOf(role) + 1).padStart(2, "0")}
+                  </span>
                   {state.name ?? ROLE_DISPLAY[role]}
-                  <span className="text-white/40 text-xs ml-2">
-                    ({role})
+                  <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/40">
+                    {role}
                   </span>
                 </div>
                 <span
-                  className={`text-[11px] uppercase tracking-wide rounded px-2 py-0.5 ${statusBadge(state.status)}`}
+                  className={`rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] ${statusBadge(state.status)}`}
                 >
                   {statusLabel(state.status)}
                 </span>
@@ -204,11 +220,16 @@ export function CouncilTimeline({
     (a) => a.passed != null,
   );
   return (
-    <div className="rounded-xl border border-white/10 bg-plum/30 p-4 space-y-3">
-      <div className="flex items-baseline justify-between">
-        <h3 className="font-display text-xl text-gold">Hội đồng đang họp</h3>
-        <span className="text-xs text-white/50 font-mono">
-          {formatElapsed(elapsedSec)}
+    <div className="card card-glow p-5 space-y-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <div>
+          <p className="chip-mono">live · sse stream</p>
+          <h3 className="mt-2 font-display text-2xl tracking-tight">
+            Hội đồng <span className="text-atelier">đang họp</span>
+          </h3>
+        </div>
+        <span className="font-mono text-xs uppercase tracking-[0.2em] text-white/55">
+          ⏱ {formatElapsed(elapsedSec)}
         </span>
       </div>
       <div className="space-y-3">

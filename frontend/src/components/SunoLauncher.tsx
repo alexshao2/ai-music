@@ -72,20 +72,18 @@ export function SunoLauncher({ draft }: Props) {
   }
 
   return (
-    <div className="rounded-xl border border-gold/40 bg-gold/5 p-4 space-y-4">
+    <div className="card card-glow space-y-4 p-5">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h3 className="font-display text-gold text-lg">Gửi sang Suno (paste tay)</h3>
-          <p className="text-sm text-white/70">
-            Bài hát đã đủ thông tin để bạn paste vào Suno Custom mode. Copy 3 ô dưới rồi
-            mở Suno bằng nút bên phải.
+          <p className="chip-mono">suno · export bundle</p>
+          <h3 className="mt-2 font-display text-2xl tracking-tight text-white">
+            Gửi sang <span className="text-atelier">Suno</span>
+          </h3>
+          <p className="mt-1 text-sm text-white/65">
+            Copy 3 ô bên dưới (Title / Style / Lyrics) rồi mở Suno Custom mode.
           </p>
         </div>
-        <button
-          onClick={open}
-          disabled={busy}
-          className="shrink-0 rounded-md border border-gold/60 text-gold px-3 py-2 text-sm font-medium disabled:opacity-50 hover:bg-gold/10"
-        >
+        <button onClick={open} disabled={busy} className="btn-bloom shrink-0">
           {busy ? "Đang chuẩn bị…" : "Mở Suno →"}
         </button>
       </div>
@@ -119,28 +117,28 @@ export function SunoLauncher({ draft }: Props) {
       <button
         onClick={() => copy("all")}
         disabled={busy}
-        className="w-full rounded-md bg-gold text-ink px-3 py-2 text-sm font-medium disabled:opacity-50 hover:opacity-90"
+        className="btn-bloom w-full"
       >
         {copied === "all" ? "Đã copy toàn bộ prompt" : "Copy tất cả (Title + Style + Lyrics)"}
       </button>
 
       {bundle && bundle.negative_tags.length > 0 && (
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-1">
-          <span className="text-xs uppercase tracking-wide text-white/60">
+        <div className="rounded-lg border border-white/10 bg-ink/40 p-3 space-y-1.5">
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-white/55">
             Suno — Exclude (paste vào field Exclude Styles)
           </span>
-          <p className="text-sm text-white/80 font-mono">
+          <p className="font-mono text-sm text-white/80">
             {bundle.negative_tags.join(", ")}
           </p>
         </div>
       )}
 
       {bundle && bundle.producer_brief && (
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-1">
-          <span className="text-xs uppercase tracking-wide text-white/60">
+        <div className="rounded-lg border border-white/10 bg-ink/40 p-3 space-y-1.5">
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-white/55">
             Producer brief (cho engineer / arranger thật)
           </span>
-          <p className="text-sm text-white/80 whitespace-pre-wrap leading-relaxed">
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-white/80">
             {bundle.producer_brief}
           </p>
         </div>
@@ -167,15 +165,17 @@ function CopyBlock({
   rows?: number;
 }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
+    <div className="rounded-lg border border-white/10 bg-ink/40 p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wide text-white/60">{label}</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-white/55">
+          {label}
+        </span>
         <button
           onClick={onCopy}
-          className="text-xs text-accent hover:underline disabled:opacity-50"
+          className="font-mono text-[11px] uppercase tracking-[0.18em] text-atelier hover:underline disabled:opacity-50"
           disabled={!ready}
         >
-          {copied ? "Đã copy" : "Copy"}
+          {copied ? "· đã copy" : "· copy"}
         </button>
       </div>
       {multiline ? (
@@ -183,13 +183,13 @@ function CopyBlock({
           readOnly
           value={value}
           rows={rows}
-          className="w-full bg-ink/60 text-white/90 text-sm rounded p-2 font-mono"
+          className="w-full rounded bg-ink/70 p-2 font-mono text-sm text-white/90"
         />
       ) : (
         <input
           readOnly
           value={value}
-          className="w-full bg-ink/60 text-white/90 text-sm rounded px-2 py-1"
+          className="w-full rounded bg-ink/70 px-2 py-1.5 font-mono text-sm text-white/90"
         />
       )}
     </div>

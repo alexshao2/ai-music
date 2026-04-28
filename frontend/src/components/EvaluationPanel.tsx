@@ -24,25 +24,26 @@ const DIMENSION_WEIGHTS: Record<string, number> = {
 
 function ScoreBar({ label, score, weight }: { label: string; score: number; weight: number }) {
   const pct = (score / 10) * 100;
-  const color =
-    score >= 7.5
-      ? "bg-emerald-500"
-      : score >= 5
-        ? "bg-amber-500"
-        : "bg-red-500";
+  // Healthy scores ride the atelier gradient; anything <5 turns red.
+  const fill =
+    score >= 5 ? "bg-atelier" : "bg-red-500";
 
   return (
     <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-white/70">
-          {label}{" "}
-          <span className="text-white/40">({weight}%)</span>
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-2 text-xs text-white/75">
+          {label}
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/40">
+            {weight}%
+          </span>
         </span>
-        <span className="font-mono text-white/90">{score.toFixed(1)}</span>
+        <span className="font-mono text-[12px] text-white/90">
+          {score.toFixed(1)}
+        </span>
       </div>
-      <div className="h-2 w-full rounded-full bg-white/10">
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
         <div
-          className={`h-full rounded-full transition-all duration-500 ${color}`}
+          className={`h-full rounded-full transition-all duration-500 ${fill}`}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -78,17 +79,20 @@ export function EvaluationPanel({
   }
 
   return (
-    <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-display text-lg text-gold">
-          Đánh giá chất lượng
-        </h3>
+    <div className="card p-5 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="chip-mono">a&amp;r · quality gate</p>
+          <h3 className="mt-2 font-display text-xl tracking-tight text-white">
+            Đánh giá <span className="text-atelier">chất lượng</span>
+          </h3>
+        </div>
         <div className="flex items-center gap-3">
           {evaluation && <QualityBadge evaluation={evaluation} />}
           <button
             onClick={runEvaluation}
             disabled={loading}
-            className="rounded-md border border-gold/60 text-gold px-3 py-1.5 text-sm font-medium disabled:opacity-50 hover:bg-gold/10"
+            className="btn-ghost"
           >
             {loading
               ? "Đang đánh giá…"
@@ -116,12 +120,12 @@ export function EvaluationPanel({
             ))}
           </div>
 
-          <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
+          <div className="rounded-lg border border-white/10 bg-ink/40 p-3 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs uppercase tracking-wide text-white/60">
+              <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-white/55">
                 Overall Score
               </span>
-              <span className="font-mono text-lg font-bold text-gold">
+              <span className="font-mono text-lg font-bold text-atelier">
                 {evaluation.scores.overall.toFixed(1)}/10
               </span>
             </div>

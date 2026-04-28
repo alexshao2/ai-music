@@ -58,7 +58,14 @@ describe("EvaluationPanel", () => {
   it("renders without evaluation — shows run button", () => {
     render(<EvaluationPanel draft={makeDraft()} />);
     expect(screen.getByText("Chạy đánh giá A&R")).toBeInTheDocument();
-    expect(screen.getByText("Đánh giá chất lượng")).toBeInTheDocument();
+    // Heading is now split across nodes ("Đánh giá " + <span>chất lượng</span>)
+    // since the redesign emphasises the gradient on the second word. Use a
+    // function-matcher so the test stays meaningful but tolerates the split.
+    expect(
+      screen.getByText((_, el) =>
+        el?.textContent === "Đánh giá chất lượng" && el.tagName === "H3",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("renders with existing evaluation — shows scores and badge", () => {

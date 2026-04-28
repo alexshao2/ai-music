@@ -62,27 +62,29 @@ describe("QualityBadge", () => {
     expect(screen.getByText("7.3")).toBeInTheDocument();
   });
 
+  // Tone classes live on the wrapper (root <div>) since the badge was
+  // redesigned into a donut-gauge component (Generative Atelier).
   it("applies green styling for RELEASE", () => {
     const { container } = render(
       <QualityBadge evaluation={makeEvaluation({ verdict: "RELEASE" })} />,
     );
-    const badge = container.querySelector("span");
-    expect(badge?.className).toContain("emerald");
+    const root = container.firstChild as HTMLElement | null;
+    expect(root?.className).toContain("emerald");
   });
 
   it("applies amber styling for REVISE", () => {
     const { container } = render(
       <QualityBadge evaluation={makeEvaluation({ verdict: "REVISE" })} />,
     );
-    const badge = container.querySelector("span");
-    expect(badge?.className).toContain("amber");
+    const root = container.firstChild as HTMLElement | null;
+    expect(root?.className).toContain("amber");
   });
 
   it("applies red styling for REJECT", () => {
     const { container } = render(
       <QualityBadge evaluation={makeEvaluation({ verdict: "REJECT" })} />,
     );
-    const badge = container.querySelector("span");
-    expect(badge?.className).toContain("red");
+    const root = container.firstChild as HTMLElement | null;
+    expect(root?.className).toContain("red");
   });
 });
