@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import Brief, SongDraft
 from app.services import council as council_svc
+from app.services import options as options_svc
 from app.services import store
 
 router = APIRouter(prefix="/council", tags=["council"])
@@ -26,6 +27,44 @@ log = logging.getLogger(__name__)
 # the limit keeps the connection alive without affecting the UI.
 SSE_KEEPALIVE_SECONDS = 15.0
 _KEEPALIVE_FRAME = b": keepalive\n\n"
+
+
+@router.get("/options")
+def list_brief_options() -> dict[str, object]:
+    """Predefined picker values for the brief form.
+
+    Genres are derived from ``knowledge/genres/*.md`` so adding a cookbook
+    automatically appears in the FE without code changes. Moods come from
+    the curated list in :mod:`app.services.options`. Languages mirror the
+    discrete values the council currently knows how to write in.
+    """
+    genres = [
+        {
+            "slug": g.slug,
+            "label": g.label,
+            "group": g.group,
+            "group_label": options_svc.group_label(g.group),
+            "tags": list(g.tags),
+            "knowledge_path": g.knowledge_path,
+        }
+        for g in options_svc.list_genres()
+    ]
+    moods = [
+        {
+            "slug": m.slug,
+            "label": m.label,
+            "group": m.group,
+            "keywords": list(m.keywords),
+        }
+        for m in options_svc.list_moods()
+    ]
+    languages = [
+        {"code": "vi", "label": "Tiếng Việt"},
+        {"code": "en", "label": "English"},
+        {"code": "ja", "label": "日本語"},
+        {"code": "ko", "label": "한국어"},
+    ]
+    return {"genres": genres, "moods": moods, "languages": languages}
 
 
 @router.get("/personas")
