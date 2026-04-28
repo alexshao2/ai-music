@@ -12,44 +12,48 @@ export default async function CouncilPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h2 className="font-display text-3xl text-accent">Hội đồng</h2>
-        <p className="text-sm text-white/70">
+    <div className="space-y-8">
+      <header className="space-y-2">
+        <p className="chip-mono">council · 06 personas</p>
+        <h2 className="font-display text-4xl tracking-tight">
+          Hội <span className="text-atelier">đồng</span>
+        </h2>
+        <p className="max-w-2xl text-sm text-white/65">
           Sáu vai trò chuyên môn cùng tranh luận để xây dựng tác phẩm. Mỗi
           persona có hệ thống prompt và tag chuyên môn riêng.
         </p>
       </header>
 
       {error && (
-        <p className="text-sm text-red-400">
+        <p className="rounded-md border border-red-500/30 bg-red-500/[0.06] p-3 text-sm text-red-300">
           Không tải được danh sách hội đồng: {error}. Bạn đã chạy backend chưa?
         </p>
       )}
 
-      <ul className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {personas.map((p) => (
-          <li
-            key={p.role}
-            className="rounded-xl border border-white/10 bg-plum/30 p-4"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="font-display text-xl text-gold">{p.name}</h3>
-              <span className="text-xs uppercase tracking-wide text-white/50">
+      <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {personas.map((p, i) => (
+          <li key={p.role} className="card card-glow p-5">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-gold">
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-white/45">
                 {p.role}
               </span>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1">
+            <h3 className="mt-2 font-display text-2xl tracking-tight text-white">
+              {p.name}
+            </h3>
+            <div className="mt-3 flex flex-wrap gap-1.5">
               {p.expertise_tags.map((t) => (
-                <span
-                  key={t}
-                  className="rounded-full border border-accent/40 px-2 py-0.5 text-xs text-accent"
-                >
+                <span key={t} className="chip-mono">
                   {t}
                 </span>
               ))}
             </div>
-            <p className="mt-3 text-sm text-white/80">{p.system_prompt}</p>
+            <p className="mt-4 text-sm leading-relaxed text-white/75">
+              {p.system_prompt}
+            </p>
           </li>
         ))}
       </ul>

@@ -8,6 +8,71 @@
 
 html, body {
   height: 100%;
-  background: linear-gradient(180deg, #0b0b10 0%, #1a1326 100%);
+  background:
+    radial-gradient(120% 60% at 0% 0%, rgba(255, 45, 110, 0.10) 0%, transparent 60%),
+    radial-gradient(80% 60% at 100% 100%, rgba(62, 229, 255, 0.08) 0%, transparent 60%),
+    linear-gradient(180deg, #0b0b10 0%, #15111d 60%, #1a1326 100%);
+  background-attachment: fixed;
   color: #f5f1ea;
+}
+
+/* Subtle film grain. SVG noise rendered once, fixed-positioned overlay
+   so scrolling content never re-triggers the GPU. Pointer-events
+   disabled so it never eats clicks. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  z-index: 0;
+}
+
+/* All real content sits above the grain layer. */
+main, header, footer { position: relative; z-index: 1; }
+
+/* ---- Form input shared by BriefForm + future surfaces ---- */
+@layer components {
+  .input {
+    @apply w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-[#f5f1ea] transition-colors;
+  }
+  .input:focus {
+    @apply outline-none border-accent/60 ring-1 ring-accent/40;
+  }
+  /* Card surface used across pages; elevated above body grain. */
+  .card {
+    @apply relative rounded-xl border border-white/10 bg-surface/80 backdrop-blur-sm;
+  }
+  .card-glow::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(120deg, rgba(255,45,110,0.35), rgba(199,155,255,0.25), rgba(62,229,255,0.35));
+    -webkit-mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+    pointer-events: none;
+  }
+  /* Rich gradient text — used on hero titles. */
+  .text-atelier {
+    background-image: linear-gradient(120deg, #ff7aa3 0%, #c79bff 45%, #3ee5ff 100%);
+    -webkit-background-clip: text;
+            background-clip: text;
+    color: transparent;
+  }
+  /* Monospace chip — BPM, key, bar count. */
+  .chip-mono {
+    @apply inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/[0.04] px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider text-white/75;
+  }
+  /* Primary CTA button with bloom. */
+  .btn-bloom {
+    @apply relative inline-flex items-center justify-center rounded-md bg-atelier px-4 py-2 text-sm font-medium text-ink transition-shadow hover:shadow-bloom disabled:opacity-50 disabled:hover:shadow-none;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center rounded-md border border-white/15 bg-white/[0.03] px-3 py-2 text-sm text-white/80 transition-colors hover:border-white/30 hover:bg-white/[0.06] disabled:opacity-50;
+  }
 }

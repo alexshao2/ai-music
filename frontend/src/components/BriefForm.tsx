@@ -221,12 +221,17 @@ export function BriefForm({ onDraft }: Props) {
   }
 
   return (
-    <div className="rounded-xl border border-white/10 bg-white/5 p-5 space-y-4">
-      <div>
-        <h2 className="font-display text-2xl text-accent">Brief sáng tác</h2>
-        <p className="text-sm text-white/60">
-          Mô tả ý tưởng — hội đồng sẽ đặt câu hỏi và đề xuất bản nháp đầu tiên.
-        </p>
+    <div className="card card-glow p-6 space-y-5">
+      <div className="flex items-baseline justify-between gap-4">
+        <div>
+          <p className="chip-mono">brief · 01</p>
+          <h2 className="mt-2 font-display text-3xl tracking-tight">
+            Brief <span className="text-atelier">sáng tác</span>
+          </h2>
+          <p className="mt-1 text-sm text-white/60">
+            Mô tả ý tưởng — hội đồng sẽ đặt câu hỏi và đề xuất bản nháp đầu tiên.
+          </p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -370,24 +375,16 @@ export function BriefForm({ onDraft }: Props) {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          onClick={askCouncil}
-          disabled={busy}
-          className="rounded-md border border-accent/50 bg-accent/10 px-4 py-2 text-sm hover:bg-accent/20 disabled:opacity-50"
-        >
+        <button onClick={askCouncil} disabled={busy} className="btn-ghost">
           {busy ? "Đang hỏi…" : "Hỏi hội đồng"}
         </button>
-        <button
-          onClick={compose}
-          disabled={busy}
-          className="rounded-md bg-accent text-ink px-4 py-2 text-sm font-medium disabled:opacity-50 hover:opacity-90"
-        >
+        <button onClick={compose} disabled={busy} className="btn-bloom">
           {busy ? "Đang sáng tác…" : "Sáng tác bản nháp"}
         </button>
         {streaming && (
           <button
             onClick={cancelCompose}
-            className="rounded-md border border-red-400/50 text-red-300 px-3 py-2 text-xs hover:bg-red-500/10"
+            className="rounded-md border border-red-400/50 px-3 py-2 text-xs text-red-300 hover:bg-red-500/10"
           >
             Huỷ
           </button>
@@ -469,20 +466,6 @@ export function BriefForm({ onDraft }: Props) {
         </div>
       )}
 
-      <style jsx>{`
-        .input {
-          width: 100%;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          border-radius: 6px;
-          padding: 8px 10px;
-          color: #f5f1ea;
-          font-size: 14px;
-        }
-        .input:focus {
-          outline: 2px solid #c79bff;
-        }
-      `}</style>
     </div>
   );
 }
@@ -496,7 +479,7 @@ function Field({
 }) {
   return (
     <label className="block">
-      <span className="block text-xs uppercase tracking-wide text-white/60 mb-1">
+      <span className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.2em] text-white/55">
         {label}
       </span>
       {children}
