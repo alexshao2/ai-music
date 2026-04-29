@@ -1139,10 +1139,13 @@ def _compose_with_llm(brief: Brief, *, refine: bool = True) -> SongDraft:
     if not refine:
         return _assemble_draft(brief, contributions, council_log)
 
-    # Refinement pass — Composer + Lyricist always re-run on Critic feedback;
-    # any persona with deterministic compliance issues is also re-run with
-    # those issues as a targeted nudge (see ``_plan_refinement``).
-    refine_targets, compliance_by_role = _plan_refinement(brief, contributions)
+    # Refinement pass — Composer + Lyricist always re-run on Critic feedback.
+    # On top of that we also re-run any persona with (a) deterministic
+    # compliance issues, or (b) Critic ``quality_scores`` ≤ 6 in their
+    # owned dimension (see ``_plan_refinement`` + ``_DIMENSION_TO_ROLES``).
+    refine_targets, compliance_by_role, quality_concerns_by_role = _plan_refinement(
+        brief, contributions,
+    )
     for role in refine_targets:
         persona = _by_role(role)
         try:
@@ -1152,6 +1155,7 @@ def _compose_with_llm(brief: Brief, *, refine: bool = True) -> SongDraft:
                 council_log,
                 contributions,
                 compliance_issues=compliance_by_role.get(role),
+                quality_concerns=quality_concerns_by_role.get(role),
             )
         except Exception:
             log.exception("Refinement turn failed for %s; keeping original", role)
@@ -1255,7 +1259,9 @@ def _compose_stream_llm(
         return
 
     if refine:
-        refine_targets, compliance_by_role = _plan_refinement(brief, contributions)
+        refine_targets, compliance_by_role, quality_concerns_by_role = (
+            _plan_refinement(brief, contributions)
+        )
         # Surface the deterministic findings so the FE can render which
         # persona is being re-run because of which compliance failure.
         if any(compliance_by_role.values()):
@@ -1272,14 +1278,31 @@ def _compose_stream_llm(
                     for issue in issues
                 ],
             }
+        # Surface Critic's per-dimension quality concerns so the FE can
+        # render "Arranger refining because structural_coherence=4.0".
+        if quality_concerns_by_role:
+            yield {
+                "type": "quality_concerns",
+                "concerns": [
+                    {
+                        "persona_role": role,
+                        "dimension": dim,
+                        "score": score,
+                    }
+                    for role, items in quality_concerns_by_role.items()
+                    for dim, score in items
+                ],
+            }
         for role in refine_targets:
             persona = _by_role(role)
             issues_for_role = compliance_by_role.get(role)
+            concerns_for_role = quality_concerns_by_role.get(role)
             yield {
                 "type": "refine_started",
                 "role": persona.role,
                 "name": persona.name,
                 "compliance_issue_count": len(issues_for_role or []),
+                "quality_concern_count": len(concerns_for_role or []),
             }
             try:
                 refined = _refine_persona(
@@ -1288,6 +1311,7 @@ def _compose_stream_llm(
                     council_log,
                     contributions,
                     compliance_issues=issues_for_role,
+                    quality_concerns=concerns_for_role,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.exception("Refinement turn failed for %s", role)
@@ -1553,35 +1577,100 @@ def _by_role(role: str) -> Persona:
 # compliance issues are added on top of this set.
 _DEFAULT_REFINEMENT_ROLES: frozenset[str] = frozenset({"composer", "lyricist"})
 
+# Critic emits a 6-dimensional ``quality_scores`` block; each dimension
+# has a clear owner persona. When Critic gives a dimension a low score
+# we re-run that persona — otherwise, an Arranger producing a flat
+# ``structural_coherence`` 4/10 stays in the draft because Arranger is
+# not in ``_DEFAULT_REFINEMENT_ROLES``. ``genre_authenticity`` is a
+# split responsibility — Theorist owns the cookbook (key/tempo/chords)
+# and Producer owns the instrumentation/style sheet — so we route to
+# both. The Critic's *own* dimension (none of these) does not refine
+# Critic — that would just re-grade itself.
+_DIMENSION_TO_ROLES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("melody_catchiness", ("composer",)),
+    ("lyric_quality", ("lyricist",)),
+    ("harmonic_sophistication", ("theorist",)),
+    ("structural_coherence", ("arranger",)),
+    ("production_direction", ("producer",)),
+    ("genre_authenticity", ("theorist", "producer")),
+)
+
+# A dimension scoring at-or-below this threshold is treated as a real
+# concern and routed to its owner(s). 6.0 sits inside Critic's own
+# ``REVISE`` band (5.0–7.4) — anything ≤ 6 is materially weak.
+_QUALITY_CONCERN_THRESHOLD: float = 6.0
+
+
+def _quality_concerns_by_role(
+    contributions: dict[str, Any],
+) -> dict[str, list[tuple[str, float]]]:
+    """Map persona-role → list of ``(dimension, score)`` Critic flagged low.
+
+    Reads ``contributions["critic"]["quality_scores"]`` and routes any
+    sub-threshold dimension to its owner via ``_DIMENSION_TO_ROLES``.
+    Returns ``{}`` when Critic didn't run, the scores block is missing,
+    or every dimension is above threshold.
+    """
+    critic = contributions.get("critic")
+    if not isinstance(critic, dict):
+        return {}
+    scores = critic.get("quality_scores")
+    if not isinstance(scores, dict):
+        return {}
+    out: dict[str, list[tuple[str, float]]] = {}
+    for dim, owner_roles in _DIMENSION_TO_ROLES:
+        raw = scores.get(dim)
+        if not isinstance(raw, (int, float)):
+            continue
+        score = float(raw)
+        if score > _QUALITY_CONCERN_THRESHOLD:
+            continue
+        for role in owner_roles:
+            out.setdefault(role, []).append((dim, score))
+    return out
+
 
 def _plan_refinement(
     brief: Brief, contributions: dict[str, Any]
-) -> tuple[list[str], dict[str, list[ComplianceIssue]]]:
+) -> tuple[
+    list[str],
+    dict[str, list[ComplianceIssue]],
+    dict[str, list[tuple[str, float]]],
+]:
     """Decide which personas to refine and which issues each gets.
 
     Routing logic:
       1. Run :func:`check_compliance` over the structured contributions.
       2. Group issues by ``persona_role``.
-      3. Refinement targets = ``_DEFAULT_REFINEMENT_ROLES`` ∪ roles with issues.
-         Critic is never refined (it would just re-grade itself).
-      4. Order targets by council seniority (Theorist → … → Producer) so a
+      3. Read Critic's per-dimension ``quality_scores`` and route any
+         dimension scoring ≤ :data:`_QUALITY_CONCERN_THRESHOLD` to its
+         owner persona via :data:`_DIMENSION_TO_ROLES`.
+      4. Refinement targets = ``_DEFAULT_REFINEMENT_ROLES`` ∪ roles with
+         compliance issues ∪ roles with quality concerns. Critic is never
+         refined (it would just re-grade itself).
+      5. Order targets by council seniority (Theorist → … → Producer) so a
          refined upstream persona is visible to downstream refines.
 
-    Returns ``(ordered_role_list, issues_by_role)``. ``issues_by_role`` is
-    ``{}`` for personas without deterministic failures — those still get
-    refined (when in the default set) but only on Critic feedback.
+    Returns ``(ordered_role_list, compliance_by_role, quality_concerns_by_role)``.
+    Empty entries mean the persona is being refined for non-deterministic
+    reasons (general Critic feedback).
     """
     issues = check_compliance(brief, contributions)
     by_role = issues_by_persona(issues)
+    quality_concerns = _quality_concerns_by_role(contributions)
 
     role_order = [p.role for p in COUNCIL_PERSONAS if p.role != "critic"]
-    targets = set(_DEFAULT_REFINEMENT_ROLES) | set(by_role.keys())
+    targets = (
+        set(_DEFAULT_REFINEMENT_ROLES)
+        | set(by_role.keys())
+        | set(quality_concerns.keys())
+    )
     targets.discard("critic")
     ordered = sorted(
         targets,
         key=lambda r: role_order.index(r) if r in role_order else len(role_order),
     )
-    return ordered, by_role
+    return ordered, by_role, quality_concerns
 
 
 # Pinned knowledge docs that MUST be in the Lyricist context for Vietnamese
@@ -1797,6 +1886,30 @@ Write your turn. Reply with a single JSON object matching this schema EXACTLY:
     return llm_svc.chat_json(system=persona.system_prompt, user=user_prompt)
 
 
+def _format_quality_concerns_block(
+    concerns: list[tuple[str, float]] | None,
+) -> str:
+    """Render Critic's low quality_scores as a targeted nudge.
+
+    The block tells the persona *which dimensions* Critic flagged low and
+    by how much, so the persona doesn't have to infer ownership from the
+    free-text ``revision_brief`` alone. Empty input → empty string.
+    """
+    if not concerns:
+        return ""
+    bullets = []
+    for dim, score in concerns:
+        readable = dim.replace("_", " ")
+        bullets.append(f"- ``{dim}``: Critic chấm {score:.1f}/10 ({readable})")
+    return (
+        "\n## CRITIC FLAGGED YOUR SCORES (≤ 6/10) — PHẢI NÂNG\n"
+        + "\n".join(bullets)
+        + "\nMỗi chiều trên đều thuộc trách nhiệm của bạn. Lần này phải "
+        "đổi cụ thể trong contribution để đẩy chiều đó lên ≥ 7/10. Đừng "
+        "trả về \"giữ nguyên\" — Critic đã chấm thấp nghĩa là cần thay.\n"
+    )
+
+
 def _refine_persona(
     persona: Persona,
     brief: Brief,
@@ -1804,6 +1917,7 @@ def _refine_persona(
     contributions: dict[str, Any],
     *,
     compliance_issues: list[ComplianceIssue] | None = None,
+    quality_concerns: list[tuple[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Re-run a persona with Critic feedback + optional compliance issues.
 
@@ -1812,12 +1926,19 @@ def _refine_persona(
     they are rendered into the prompt as a "you must fix these" block
     so the model addresses them concretely instead of relying on the
     Critic's natural-language feedback alone.
+
+    ``quality_concerns`` are ``(dimension, score)`` tuples from Critic's
+    sub-threshold ``quality_scores`` rows that route to this persona via
+    :data:`_DIMENSION_TO_ROLES`. Their dedicated block names exactly the
+    metric the persona must lift on this retry.
     """
     compliance_block = ""
     if compliance_issues:
         compliance_block = (
             f"\n\n{format_compliance_issues_for_retry(compliance_issues)}\n"
         )
+
+    quality_block = _format_quality_concerns_block(quality_concerns)
 
     user_prompt = f"""## Brief
 - Mood: {brief.mood}
@@ -1832,7 +1953,7 @@ def _refine_persona(
 
 ## Critic's feedback
 {_format_contributions(contributions.get("critic", {}))}
-{compliance_block}
+{compliance_block}{quality_block}
 ## Your task
 Update your contribution to address the Critic's priority_fix and concrete_fixes
 where they are valid, AND every compliance check listed above. Keep what is

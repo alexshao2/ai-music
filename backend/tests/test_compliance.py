@@ -284,16 +284,19 @@ def test_format_issues_for_retry_empty() -> None:
 
 
 def test_plan_refinement_clean_keeps_default(vi_brief: Brief) -> None:
-    targets, by_role = _plan_refinement(vi_brief, _clean_contributions(vi_brief))
+    targets, by_role, concerns = _plan_refinement(
+        vi_brief, _clean_contributions(vi_brief),
+    )
     assert targets == ["composer", "lyricist"]
     assert by_role == {}
+    assert concerns == {}
 
 
 def test_plan_refinement_adds_persona_with_issues(vi_brief: Brief) -> None:
     contributions = _clean_contributions(vi_brief)
     contributions["theorist"]["chord_progression_per_section"]["verse"] = ["Em"]
     contributions["producer"]["suno_style_string"] = "x," * 200
-    targets, by_role = _plan_refinement(vi_brief, contributions)
+    targets, by_role, _concerns = _plan_refinement(vi_brief, contributions)
     assert "theorist" in targets
     assert "producer" in targets
     # Composer + Lyricist still in targets (default set).
@@ -308,5 +311,147 @@ def test_plan_refinement_adds_persona_with_issues(vi_brief: Brief) -> None:
 
 
 def test_plan_refinement_never_includes_critic(vi_brief: Brief) -> None:
-    targets, _ = _plan_refinement(vi_brief, _clean_contributions(vi_brief))
+    targets, _, _concerns = _plan_refinement(
+        vi_brief, _clean_contributions(vi_brief),
+    )
     assert "critic" not in targets
+
+
+# --- Per-dimension Critic quality_scores routing ---------------------------
+
+
+def _critic_with_scores(**dim_scores: float) -> dict:
+    """Build a Critic contribution with the given per-dimension scores.
+
+    Unspecified dimensions default to 8.0 (above the concern threshold).
+    """
+    base = {
+        "melody_catchiness": 8.0,
+        "lyric_quality": 8.0,
+        "harmonic_sophistication": 8.0,
+        "structural_coherence": 8.0,
+        "production_direction": 8.0,
+        "genre_authenticity": 8.0,
+        "overall": 8.0,
+    }
+    base.update(dim_scores)
+    return {"quality_scores": base}
+
+
+def test_quality_concerns_route_dimension_to_owner(vi_brief: Brief) -> None:
+    """structural_coherence ≤ 6 must add Arranger to refine targets even
+    though Arranger is not in the default set and there are no compliance
+    issues."""
+    from app.services.council import _plan_refinement
+
+    contributions = _clean_contributions(vi_brief)
+    contributions["critic"] = _critic_with_scores(structural_coherence=4.0)
+
+    targets, _by_role, concerns = _plan_refinement(vi_brief, contributions)
+
+    assert "arranger" in targets, (
+        f"Arranger should refine when structural_coherence is low; targets={targets}"
+    )
+    assert "arranger" in concerns
+    assert concerns["arranger"] == [("structural_coherence", 4.0)]
+
+
+def test_quality_concerns_high_score_no_refinement(vi_brief: Brief) -> None:
+    """All dimensions ≥ 7 → Arranger / Theorist / Producer NOT added."""
+    from app.services.council import _plan_refinement
+
+    contributions = _clean_contributions(vi_brief)
+    contributions["critic"] = _critic_with_scores()  # all 8.0
+
+    targets, _by_role, concerns = _plan_refinement(vi_brief, contributions)
+
+    assert "arranger" not in targets
+    assert "theorist" not in targets
+    assert "producer" not in targets
+    assert concerns == {}
+
+
+def test_quality_concerns_genre_authenticity_routes_to_both_roles(
+    vi_brief: Brief,
+) -> None:
+    """genre_authenticity is split-owned by Theorist + Producer."""
+    from app.services.council import _plan_refinement
+
+    contributions = _clean_contributions(vi_brief)
+    contributions["critic"] = _critic_with_scores(genre_authenticity=5.0)
+
+    targets, _by_role, concerns = _plan_refinement(vi_brief, contributions)
+
+    assert "theorist" in targets
+    assert "producer" in targets
+    assert ("genre_authenticity", 5.0) in concerns["theorist"]
+    assert ("genre_authenticity", 5.0) in concerns["producer"]
+
+
+def test_quality_concerns_threshold_boundary(vi_brief: Brief) -> None:
+    """Exactly 6.0 is the threshold (≤). 6.0 flags, 6.1 does not."""
+    from app.services.council import _plan_refinement
+
+    contributions = _clean_contributions(vi_brief)
+    contributions["critic"] = _critic_with_scores(harmonic_sophistication=6.0)
+    targets_at, _, concerns_at = _plan_refinement(vi_brief, contributions)
+    assert "theorist" in targets_at
+    assert ("harmonic_sophistication", 6.0) in concerns_at["theorist"]
+
+    contributions["critic"] = _critic_with_scores(harmonic_sophistication=6.1)
+    targets_above, _, concerns_above = _plan_refinement(vi_brief, contributions)
+    assert "theorist" not in targets_above
+    assert "theorist" not in concerns_above
+
+
+def test_quality_concerns_missing_critic_no_op(vi_brief: Brief) -> None:
+    """No critic contribution → empty concerns, default refinement targets."""
+    from app.services.council import _plan_refinement
+
+    contributions = _clean_contributions(vi_brief)
+    contributions.pop("critic", None)
+    targets, _by_role, concerns = _plan_refinement(vi_brief, contributions)
+    assert targets == ["composer", "lyricist"]
+    assert concerns == {}
+
+
+def test_quality_concerns_malformed_scores_silently_ignored(vi_brief: Brief) -> None:
+    """If Critic returns garbage instead of numeric scores, treat as no
+    concerns rather than raising."""
+    from app.services.council import _plan_refinement
+
+    contributions = _clean_contributions(vi_brief)
+    contributions["critic"] = {"quality_scores": "not a dict"}
+    targets1, _, concerns1 = _plan_refinement(vi_brief, contributions)
+    assert concerns1 == {}
+    assert targets1 == ["composer", "lyricist"]
+
+    contributions["critic"] = {
+        "quality_scores": {"structural_coherence": "low"}
+    }
+    targets2, _, concerns2 = _plan_refinement(vi_brief, contributions)
+    assert concerns2 == {}
+    assert "arranger" not in targets2
+
+
+def test_format_quality_concerns_block_renders_dim_and_score() -> None:
+    """The retry nudge must name the exact dimension + score so the
+    persona knows which metric to lift."""
+    from app.services.council import _format_quality_concerns_block
+
+    block = _format_quality_concerns_block(
+        [("structural_coherence", 4.0), ("genre_authenticity", 5.5)],
+    )
+    assert "structural_coherence" in block
+    assert "4.0" in block
+    assert "genre_authenticity" in block
+    assert "5.5" in block
+    # Must instruct the model to actually CHANGE its contribution.
+    assert "≥ 7" in block or ">= 7" in block
+
+
+def test_format_quality_concerns_block_empty() -> None:
+    from app.services.council import _format_quality_concerns_block
+
+    assert _format_quality_concerns_block(None) == ""
+    assert _format_quality_concerns_block([]) == ""
