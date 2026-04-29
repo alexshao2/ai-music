@@ -1612,7 +1612,18 @@ def _run_persona_with_retry(
 
         if persona.role == "lyricist":
             contributions = result.get("contributions") if isinstance(result, dict) else None
-            issues = validate_lyrics(contributions or {}, language=brief.language)
+            # Pass Composer's structured contribution so the validator can
+            # cross-check syllable counts and Vietnamese tone-at-peak.
+            composer_contrib = (
+                prior_contributions.get("composer")
+                if isinstance(prior_contributions, dict)
+                else None
+            )
+            issues = validate_lyrics(
+                contributions or {},
+                language=brief.language,
+                composer=composer_contrib if isinstance(composer_contrib, dict) else None,
+            )
             if issues and attempt < max_attempts:
                 last_issues = issues
                 log.warning(
