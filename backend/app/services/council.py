@@ -35,6 +35,14 @@ from app.schemas import (
 )
 from app.services import knowledge as knowledge_svc
 from app.services import llm as llm_svc
+from app.services.compliance import (
+    ComplianceIssue,
+    check_compliance,
+    issues_by_persona,
+)
+from app.services.compliance import (
+    format_issues_for_retry as format_compliance_issues_for_retry,
+)
 from app.services.lyric_quality import (
     LyricIssue,
     format_issues_for_retry,
@@ -1072,11 +1080,20 @@ def _compose_with_llm(brief: Brief, *, refine: bool = True) -> SongDraft:
     if not refine:
         return _assemble_draft(brief, contributions, council_log)
 
-    # Refinement pass — Composer + Lyricist react to Critic.
-    for role in ("composer", "lyricist"):
+    # Refinement pass — Composer + Lyricist always re-run on Critic feedback;
+    # any persona with deterministic compliance issues is also re-run with
+    # those issues as a targeted nudge (see ``_plan_refinement``).
+    refine_targets, compliance_by_role = _plan_refinement(brief, contributions)
+    for role in refine_targets:
         persona = _by_role(role)
         try:
-            refined = _refine_persona(persona, brief, council_log, contributions)
+            refined = _refine_persona(
+                persona,
+                brief,
+                council_log,
+                contributions,
+                compliance_issues=compliance_by_role.get(role),
+            )
         except Exception:
             log.exception("Refinement turn failed for %s; keeping original", role)
             continue
@@ -1179,15 +1196,40 @@ def _compose_stream_llm(
         return
 
     if refine:
-        for role in ("composer", "lyricist"):
+        refine_targets, compliance_by_role = _plan_refinement(brief, contributions)
+        # Surface the deterministic findings so the FE can render which
+        # persona is being re-run because of which compliance failure.
+        if any(compliance_by_role.values()):
+            yield {
+                "type": "compliance_issues",
+                "issues": [
+                    {
+                        "persona_role": issue.persona_role,
+                        "code": issue.code,
+                        "message": issue.message,
+                        "fix_hint": issue.fix_hint,
+                    }
+                    for issues in compliance_by_role.values()
+                    for issue in issues
+                ],
+            }
+        for role in refine_targets:
             persona = _by_role(role)
+            issues_for_role = compliance_by_role.get(role)
             yield {
                 "type": "refine_started",
                 "role": persona.role,
                 "name": persona.name,
+                "compliance_issue_count": len(issues_for_role or []),
             }
             try:
-                refined = _refine_persona(persona, brief, council_log, contributions)
+                refined = _refine_persona(
+                    persona,
+                    brief,
+                    council_log,
+                    contributions,
+                    compliance_issues=issues_for_role,
+                )
             except Exception as exc:  # noqa: BLE001
                 log.exception("Refinement turn failed for %s", role)
                 yield {
@@ -1424,6 +1466,43 @@ def _by_role(role: str) -> Persona:
     raise KeyError(role)
 
 
+# Refinement default — always re-run Composer + Lyricist after Critic so
+# natural-language feedback (priority_fix, concrete_fixes) reaches the
+# two contributions that change the most. Personas with deterministic
+# compliance issues are added on top of this set.
+_DEFAULT_REFINEMENT_ROLES: frozenset[str] = frozenset({"composer", "lyricist"})
+
+
+def _plan_refinement(
+    brief: Brief, contributions: dict[str, Any]
+) -> tuple[list[str], dict[str, list[ComplianceIssue]]]:
+    """Decide which personas to refine and which issues each gets.
+
+    Routing logic:
+      1. Run :func:`check_compliance` over the structured contributions.
+      2. Group issues by ``persona_role``.
+      3. Refinement targets = ``_DEFAULT_REFINEMENT_ROLES`` ∪ roles with issues.
+         Critic is never refined (it would just re-grade itself).
+      4. Order targets by council seniority (Theorist → … → Producer) so a
+         refined upstream persona is visible to downstream refines.
+
+    Returns ``(ordered_role_list, issues_by_role)``. ``issues_by_role`` is
+    ``{}`` for personas without deterministic failures — those still get
+    refined (when in the default set) but only on Critic feedback.
+    """
+    issues = check_compliance(brief, contributions)
+    by_role = issues_by_persona(issues)
+
+    role_order = [p.role for p in COUNCIL_PERSONAS if p.role != "critic"]
+    targets = set(_DEFAULT_REFINEMENT_ROLES) | set(by_role.keys())
+    targets.discard("critic")
+    ordered = sorted(
+        targets,
+        key=lambda r: role_order.index(r) if r in role_order else len(role_order),
+    )
+    return ordered, by_role
+
+
 # Pinned knowledge docs that MUST be in the Lyricist context for Vietnamese
 # briefs. RAG sometimes substitutes lower-ranked "related" chunks when the
 # query is dominated by genre keywords (e.g. "V-pop ballad"), causing the
@@ -1642,7 +1721,23 @@ def _refine_persona(
     brief: Brief,
     prior_turns: list[CouncilTurn],
     contributions: dict[str, Any],
+    *,
+    compliance_issues: list[ComplianceIssue] | None = None,
 ) -> dict[str, Any]:
+    """Re-run a persona with Critic feedback + optional compliance issues.
+
+    ``compliance_issues`` are the deterministic check failures attributed
+    to this persona (see :mod:`app.services.compliance`). When present,
+    they are rendered into the prompt as a "you must fix these" block
+    so the model addresses them concretely instead of relying on the
+    Critic's natural-language feedback alone.
+    """
+    compliance_block = ""
+    if compliance_issues:
+        compliance_block = (
+            f"\n\n{format_compliance_issues_for_retry(compliance_issues)}\n"
+        )
+
     user_prompt = f"""## Brief
 - Mood: {brief.mood}
 - Genre: {brief.genre}
@@ -1656,11 +1751,12 @@ def _refine_persona(
 
 ## Critic's feedback
 {_format_contributions(contributions.get("critic", {}))}
-
+{compliance_block}
 ## Your task
 Update your contribution to address the Critic's priority_fix and concrete_fixes
-where they are valid. Keep what is already good — only change what improves the
-song. Reply with a single JSON object:
+where they are valid, AND every compliance check listed above. Keep what is
+already good — only change what improves the song. Reply with a single JSON
+object:
 
 {_REFINE_SCHEMA}
 
