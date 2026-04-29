@@ -73,6 +73,11 @@ class SongDraft(BaseModel):
     suno_output: SunoOutput | None = None
     compliance: dict[str, bool] = Field(default_factory=dict)
     evaluation: QualityEvaluation | None = None
+    # Independent A&R evaluator (audio_evaluator.evaluate_draft) score —
+    # populated when the quality gate runs, used to counter the Critic's
+    # tendency to grade its own work too generously. ``None`` outside the
+    # quality-gate path.
+    independent_evaluation: QualityEvaluation | None = None
 
 
 class QualityScores(BaseModel):

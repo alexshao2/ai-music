@@ -55,6 +55,40 @@ def test_quality_stream_stub_one_attempt():
     assert types[-1] == "done"
 
 
+def _stub_audio_evaluator_to_match_critic(monkeypatch) -> None:
+    """Force the independent A&R evaluator to mirror the Critic's score.
+
+    Tests that pre-date the independent evaluator wiring assumed the gate
+    score *was* the Critic score. Since the gate now averages Critic with
+    the audio evaluator, those tests stay valid by pinning the audio
+    evaluator to whatever the Critic stamped onto the draft.
+    """
+    from app.schemas import QualityEvaluation, QualityScores, SongDraft
+    from app.services import audio_evaluator
+
+    def _mirror(draft: SongDraft) -> QualityEvaluation:
+        if draft.evaluation is not None:
+            critic_score = draft.evaluation.scores.overall
+        else:
+            critic_score = 0.0
+        return QualityEvaluation(
+            scores=QualityScores(
+                melody_catchiness=critic_score,
+                lyric_quality=critic_score,
+                harmonic_sophistication=critic_score,
+                structural_coherence=critic_score,
+                production_direction=critic_score,
+                genre_authenticity=critic_score,
+                overall=critic_score,
+            ),
+            verdict="RELEASE" if critic_score >= 7.5 else "REVISE",
+            feedback="mirrored",
+            revision_notes="",
+        )
+
+    monkeypatch.setattr(audio_evaluator, "evaluate_draft", _mirror)
+
+
 def test_quality_stream_loops_until_passed(monkeypatch):
     """When the inner draft starts low and improves, the loop must stop on
     the first attempt that meets ``target_score`` and yield that draft."""
@@ -109,10 +143,11 @@ def test_quality_stream_loops_until_passed(monkeypatch):
         yield {"type": "done"}
 
     # Force the LLM-mode branch (`has_llm` is a Pydantic property — set the
-    # underlying creds instead) and stub the inner generator.
+    # underlying creds instead) and stub the inner generator + evaluator.
     monkeypatch.setattr(council_svc.settings, "llm_api_key", "test")
     monkeypatch.setattr(council_svc.settings, "llm_base_url", "https://x.test/v1")
     monkeypatch.setattr(council_svc, "_compose_stream_llm", fake_inner)
+    _stub_audio_evaluator_to_match_critic(monkeypatch)
     assert council_svc.settings.has_llm
 
     events = list(
@@ -189,6 +224,7 @@ def test_quality_stream_keeps_best_when_target_unreached(monkeypatch):
     monkeypatch.setattr(council_svc.settings, "llm_api_key", "test")
     monkeypatch.setattr(council_svc.settings, "llm_base_url", "https://x.test/v1")
     monkeypatch.setattr(council_svc, "_compose_stream_llm", fake_inner)
+    _stub_audio_evaluator_to_match_critic(monkeypatch)
     assert council_svc.settings.has_llm
 
     events = list(
@@ -205,6 +241,155 @@ def test_quality_stream_keeps_best_when_target_unreached(monkeypatch):
     assert chosen.evaluation is not None
     assert chosen.evaluation.scores.overall == 6.0
     assert chosen.evaluation.max_attempts_reached is True
+
+
+def test_quality_stream_independent_evaluator_blocks_inflated_critic(monkeypatch):
+    """Critic over-rates a draft (9.0); independent A&R sees the same draft
+    as 4.0. Gate score must be the average (6.5) — below target — so the
+    council must retry instead of releasing on attempt 1."""
+    from app.schemas import (
+        QualityEvaluation,
+        QualityScores,
+        Section,
+        SongDraft,
+    )
+    from app.services import audio_evaluator
+    from app.services import council as council_svc
+
+    base_brief = Brief(mood="hoài niệm", genre="ballad", language="vi")
+
+    # Critic is wildly optimistic across all attempts.
+    critic_scores = [9.0, 9.0, 9.0]
+    # Independent evaluator catches reality — only attempt 3 is actually good.
+    indep_scores = [4.0, 5.0, 8.0]
+    n = {"i": 0}
+
+    def fake_inner(brief, *, refine):
+        idx = n["i"]
+        n["i"] += 1
+        score = critic_scores[idx]
+        evaluation = QualityEvaluation(
+            scores=QualityScores(
+                melody_catchiness=score, lyric_quality=score,
+                harmonic_sophistication=score, structural_coherence=score,
+                production_direction=score, genre_authenticity=score,
+                overall=score,
+            ),
+            verdict="RELEASE",
+            feedback="Critic loves it",
+            revision_notes="",
+        )
+        draft = SongDraft(
+            id=f"d{idx}",
+            title="t", brief=brief, key="C", tempo_bpm=100,
+            structure=[Section(section="verse", bars=8, chords=["C"])],
+            lyrics={"verse_1": "x"},
+            arrangement={}, production={}, council_log=[],
+            evaluation=evaluation,
+        )
+        yield {"type": "draft", "draft": draft}
+        yield {"type": "done"}
+
+    def fake_independent(draft):
+        # Independent score is keyed on draft id so we can pin a sequence.
+        idx = int(draft.id[1:])
+        s = indep_scores[idx]
+        return QualityEvaluation(
+            scores=QualityScores(
+                melody_catchiness=s, lyric_quality=s,
+                harmonic_sophistication=s, structural_coherence=s,
+                production_direction=s, genre_authenticity=s, overall=s,
+            ),
+            verdict="REVISE",
+            feedback="A&R unimpressed",
+            revision_notes="Hook too weak; lyric clichéd",
+        )
+
+    monkeypatch.setattr(council_svc.settings, "llm_api_key", "test")
+    monkeypatch.setattr(council_svc.settings, "llm_base_url", "https://x.test/v1")
+    monkeypatch.setattr(council_svc, "_compose_stream_llm", fake_inner)
+    monkeypatch.setattr(audio_evaluator, "evaluate_draft", fake_independent)
+
+    events = list(
+        council_svc.compose_quality_stream(
+            base_brief, target_score=7.5, max_revisions=2, refine=True
+        )
+    )
+
+    rev_done = [e for e in events if e["type"] == "revision_completed"]
+    # Gate score = (critic + indep) / 2 = (9.0 + 4.0)/2 = 6.5,
+    # then (9.0 + 5.0)/2 = 7.0, then (9.0 + 8.0)/2 = 8.5.
+    gate_scores = [round(e["score"], 2) for e in rev_done]
+    assert gate_scores == [6.5, 7.0, 8.5]
+    # Each event must surface both component scores.
+    for e in rev_done:
+        assert "critic_score" in e
+        assert "independent_score" in e
+    assert [e["passed"] for e in rev_done] == [False, False, True]
+    # Critic-only would have been [True, True, True] from attempt 1 — gate
+    # logic correctly forces 2 retries before release.
+
+    drafts = [e for e in events if e["type"] == "draft"]
+    chosen = drafts[0]["draft"]
+    # The chosen draft carries BOTH evaluations.
+    assert chosen.evaluation is not None
+    assert chosen.independent_evaluation is not None
+    assert chosen.evaluation.scores.overall == 9.0
+    assert chosen.independent_evaluation.scores.overall == 8.0
+
+
+def test_quality_stream_independent_evaluator_failure_falls_back_to_critic(monkeypatch):
+    """If the independent evaluator raises, the gate must still work using
+    Critic alone (no hard dependency on the second LLM pass)."""
+    from app.schemas import (
+        QualityEvaluation,
+        QualityScores,
+        Section,
+        SongDraft,
+    )
+    from app.services import audio_evaluator
+    from app.services import council as council_svc
+
+    base_brief = Brief(mood="x", genre="y", language="vi")
+
+    def fake_inner(brief, *, refine):
+        evaluation = QualityEvaluation(
+            scores=QualityScores(overall=8.0),
+            verdict="RELEASE", feedback="ok", revision_notes="",
+        )
+        draft = SongDraft(
+            id="d0", title="t", brief=brief, key="C", tempo_bpm=100,
+            structure=[Section(section="verse", bars=8, chords=["C"])],
+            lyrics={"verse_1": "x"},
+            arrangement={}, production={}, council_log=[],
+            evaluation=evaluation,
+        )
+        yield {"type": "draft", "draft": draft}
+        yield {"type": "done"}
+
+    def boom(_draft):
+        raise RuntimeError("LLM down")
+
+    monkeypatch.setattr(council_svc.settings, "llm_api_key", "test")
+    monkeypatch.setattr(council_svc.settings, "llm_base_url", "https://x.test/v1")
+    monkeypatch.setattr(council_svc, "_compose_stream_llm", fake_inner)
+    monkeypatch.setattr(audio_evaluator, "evaluate_draft", boom)
+
+    events = list(
+        council_svc.compose_quality_stream(
+            base_brief, target_score=7.5, max_revisions=2, refine=True
+        )
+    )
+
+    rev_done = [e for e in events if e["type"] == "revision_completed"]
+    assert len(rev_done) == 1
+    assert round(rev_done[0]["score"], 1) == 8.0  # critic-only fallback
+    assert rev_done[0]["critic_score"] == 8.0
+    assert rev_done[0]["independent_score"] == 0.0
+    assert rev_done[0]["passed"] is True
+
+    drafts = [e for e in events if e["type"] == "draft"]
+    assert drafts[0]["draft"].independent_evaluation is None
 
 
 def test_quality_stream_endpoint_emits_keepalive(monkeypatch):

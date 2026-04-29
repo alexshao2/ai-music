@@ -460,3 +460,123 @@ class TestSchemaValidation:
         draft = _make_draft(evaluation=evaluation)
         assert draft.evaluation is not None
         assert draft.evaluation.verdict == "RELEASE"
+
+    def test_song_draft_independent_evaluation_optional(self) -> None:
+        draft = _make_draft()
+        assert draft.independent_evaluation is None
+
+    def test_song_draft_with_independent_evaluation(self) -> None:
+        critic = QualityEvaluation(scores=QualityScores(overall=8.5), verdict="RELEASE")
+        indep = QualityEvaluation(scores=QualityScores(overall=5.5), verdict="REVISE")
+        draft = _make_draft(evaluation=critic, independent_evaluation=indep)
+        assert draft.evaluation is not None
+        assert draft.independent_evaluation is not None
+        assert draft.evaluation.scores.overall == 8.5
+        assert draft.independent_evaluation.scores.overall == 5.5
+
+
+class TestQualityGateIndependentEvaluator:
+    """Cover the non-streaming ``compose_with_quality_gate`` path: the gate
+    score must be the average of Critic + independent A&R, and an inflated
+    Critic alone should not push a draft over the threshold."""
+
+    def test_score_helper_averages_two_passes(self, monkeypatch) -> None:
+        from app.schemas import QualityEvaluation, QualityScores
+        from app.services import audio_evaluator
+        from app.services.council import _score_with_independent_evaluator
+
+        critic_eval = QualityEvaluation(
+            scores=QualityScores(overall=9.0),
+            verdict="RELEASE",
+        )
+        draft = _make_draft(evaluation=critic_eval)
+
+        def fake_indep(_d):
+            return QualityEvaluation(
+                scores=QualityScores(overall=5.0),
+                verdict="REVISE",
+                revision_notes="weak hook",
+            )
+
+        monkeypatch.setattr(audio_evaluator, "evaluate_draft", fake_indep)
+        critic_overall, indep_overall, gate = _score_with_independent_evaluator(draft)
+        assert critic_overall == 9.0
+        assert indep_overall == 5.0
+        assert gate == 7.0
+        # The independent evaluation is attached for inspection.
+        assert draft.independent_evaluation is not None
+        assert draft.independent_evaluation.scores.overall == 5.0
+
+    def test_score_helper_falls_back_when_evaluator_raises(self, monkeypatch) -> None:
+        from app.schemas import QualityEvaluation, QualityScores
+        from app.services import audio_evaluator
+        from app.services.council import _score_with_independent_evaluator
+
+        draft = _make_draft(evaluation=QualityEvaluation(
+            scores=QualityScores(overall=8.0), verdict="RELEASE",
+        ))
+
+        def boom(_d):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(audio_evaluator, "evaluate_draft", boom)
+        critic, indep, gate = _score_with_independent_evaluator(draft)
+        assert critic == 8.0
+        assert indep == 0.0
+        # Gate falls back to critic-only — we don't punish the draft just
+        # because the second evaluator is offline.
+        assert gate == 8.0
+        assert draft.independent_evaluation is None
+
+    def test_compose_with_quality_gate_retries_on_low_indep(self, monkeypatch) -> None:
+        """Critic stamps 9.0 every attempt, but independent evaluator climbs
+        from 4 → 5 → 8. Gate (avg) crosses 7.5 only on attempt 3."""
+        from app.schemas import (
+            QualityEvaluation,
+            QualityScores,
+            Section,
+            SongDraft,
+        )
+        from app.services import audio_evaluator
+        from app.services import council as council_svc
+
+        n = {"i": 0}
+        indep_seq = [4.0, 5.0, 8.0]
+
+        def fake_compose(brief, *, refine):
+            idx = n["i"]
+            n["i"] += 1
+            return SongDraft(
+                id=f"g{idx}", title="t", brief=brief, key="C", tempo_bpm=100,
+                structure=[Section(section="verse", bars=8, chords=["C"])],
+                lyrics={"verse_1": "x"},
+                arrangement={}, production={}, council_log=[],
+                evaluation=QualityEvaluation(
+                    scores=QualityScores(overall=9.0),
+                    verdict="RELEASE",
+                    revision_notes="",
+                ),
+            )
+
+        def fake_indep(draft):
+            idx = int(draft.id[1:])
+            s = indep_seq[idx]
+            return QualityEvaluation(
+                scores=QualityScores(overall=s),
+                verdict="REVISE" if s < 7.5 else "RELEASE",
+                revision_notes="",
+            )
+
+        monkeypatch.setattr(council_svc, "compose", fake_compose)
+        monkeypatch.setattr(audio_evaluator, "evaluate_draft", fake_indep)
+
+        result = council_svc.compose_with_quality_gate(
+            _make_brief(), target_score=7.5, max_revisions=2,
+        )
+        # Three calls — gate only opened on attempt 3 (avg = 8.5).
+        assert n["i"] == 3
+        assert result.id == "g2"
+        assert result.evaluation is not None
+        assert result.evaluation.attempt == 3
+        assert result.independent_evaluation is not None
+        assert result.independent_evaluation.scores.overall == 8.0
