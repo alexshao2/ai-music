@@ -43,6 +43,13 @@ from app.services.compliance import (
 from app.services.compliance import (
     format_issues_for_retry as format_compliance_issues_for_retry,
 )
+from app.services.lessons import (
+    brief_signature,
+    collect_lessons_from_run,
+    format_lessons_for_prompt,
+    recent_lessons_for,
+    record_lessons,
+)
 from app.services.lyric_quality import (
     LyricIssue,
     format_issues_for_retry,
@@ -1137,6 +1144,7 @@ def _compose_with_llm(brief: Brief, *, refine: bool = True) -> SongDraft:
         raise RuntimeError("Every council persona failed; falling back to stub.")
 
     if not refine:
+        _record_run_lessons(brief, contributions)
         return _assemble_draft(brief, contributions, council_log)
 
     # Refinement pass — Composer + Lyricist always re-run on Critic feedback;
@@ -1165,6 +1173,7 @@ def _compose_with_llm(brief: Brief, *, refine: bool = True) -> SongDraft:
             )
         )
 
+    _record_run_lessons(brief, contributions)
     return _assemble_draft(brief, contributions, council_log)
 
 
@@ -1315,6 +1324,7 @@ def _compose_stream_llm(
                 "contributions": refined["contributions"],
             }
 
+    _record_run_lessons(brief, contributions)
     draft = _assemble_draft(brief, contributions, council_log)
     yield {"type": "draft", "draft": draft}
     yield {"type": "done"}
@@ -1584,6 +1594,44 @@ def _plan_refinement(
     return ordered, by_role
 
 
+def _record_run_lessons(
+    brief: Brief,
+    contributions: dict[str, Any],
+) -> None:
+    """Persist Critic / compliance / lyric findings from this run.
+
+    Pulled into a helper so both the blocking and streaming compose
+    paths can call it once at the very end without duplicating the
+    extraction logic. Always swallows its own errors — recording is a
+    best-effort optimisation and must never fail compose.
+    """
+    try:
+        compliance_issues = check_compliance(brief, contributions)
+        lyricist_contrib = contributions.get("lyricist") or {}
+        composer_contrib = contributions.get("composer") or {}
+        lyric_issues = (
+            validate_lyrics(
+                lyricist_contrib,
+                language=brief.language,
+                composer=composer_contrib if isinstance(composer_contrib, dict) else None,
+            )
+            if isinstance(lyricist_contrib, dict)
+            else []
+        )
+        rows = collect_lessons_from_run(
+            compliance_issues=compliance_issues,
+            lyric_issues=lyric_issues,
+        )
+        if not rows:
+            return
+        sig = brief_signature(
+            language=brief.language, genre=brief.genre, mood=brief.mood,
+        )
+        record_lessons(sig, rows)
+    except Exception:  # noqa: BLE001
+        log.exception("lessons.record_run_lessons swallowed")
+
+
 # Pinned knowledge docs that MUST be in the Lyricist context for Vietnamese
 # briefs. RAG sometimes substitutes lower-ranked "related" chunks when the
 # query is dominated by genre keywords (e.g. "V-pop ballad"), causing the
@@ -1783,6 +1831,17 @@ def _run_persona(
 
     retry_block = f"\n\n{retry_nudge}\n" if retry_nudge else ""
 
+    # Cross-session memory: surface recurring complaints recorded for
+    # this brief's signature on previous runs. Empty string when there
+    # are no prior runs (or the lessons subsystem is disabled).
+    sig = brief_signature(
+        language=brief.language, genre=brief.genre, mood=brief.mood,
+    )
+    lessons_block = format_lessons_for_prompt(
+        recent_lessons_for(sig, persona.role)
+    )
+    lessons_section = f"\n{lessons_block}\n" if lessons_block else ""
+
     user_prompt = f"""## Brief
 - Mood: {brief.mood}
 - Genre: {brief.genre}
@@ -1790,7 +1849,7 @@ def _run_persona(
 - Duration target: {brief.duration_sec}s
 - References: {", ".join(brief.references) if brief.references else "(none)"}
 - Notes: {brief.notes or "(none)"}
-
+{lessons_section}
 ## Knowledge retrieved for your role
 {knowledge_block}
 
