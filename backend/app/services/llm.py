@@ -188,9 +188,14 @@ def chat(
                     elapsed_seconds=elapsed,
                     partial_chars=sum(len(p) for p in parts),
                 )
-            last_chunk_at = now
+            # Only "real" chunks reset the idle timer. Some proxies emit
+            # empty SSE events (``{"choices": []}``) as TCP keepalives —
+            # if we treated those as fresh content the idle guard above
+            # would never fire and the user would wait the full
+            # ``llm_timeout_sec`` instead of ``llm_read_timeout_sec``.
             if not chunk.choices:
                 continue
+            last_chunk_at = now
             choice = chunk.choices[0]
             delta = choice.delta
             piece = getattr(delta, "content", None)

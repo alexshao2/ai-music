@@ -36,6 +36,13 @@ class _FakeChunk:
         self.choices = [SimpleNamespace(delta=delta, finish_reason=finish_reason)]
 
 
+class _KeepaliveChunk:
+    """Mirrors a proxy-emitted SSE keepalive: ``{"choices": []}``."""
+
+    def __init__(self) -> None:
+        self.choices: list[object] = []
+
+
 class _FakeStream:
     """Iterable stream with a closeable .response — mirrors openai sdk."""
 
@@ -262,6 +269,48 @@ def test_chat_raises_when_total_budget_exceeded(
             llm_svc.chat(system="sys", user="usr")
 
     assert exc_info.value.elapsed_seconds > 180.0
+    assert fake_stream.closed is True
+
+
+def test_empty_choices_chunks_do_not_reset_idle_timer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proxy SSE keepalives (``{"choices": []}``) must NOT reset idle.
+
+    Otherwise a proxy that emits a no-content keepalive every 30s
+    would silently extend the wait indefinitely — the user reaches
+    ``llm_timeout_sec`` (180s) instead of the intended
+    ``llm_read_timeout_sec`` (60s) before any guard fires.
+    """
+    chunks: list[object] = [
+        _FakeChunk("a"),       # real content at t≈baseline
+        _KeepaliveChunk(),     # proxy keepalive — must NOT reset idle
+        _KeepaliveChunk(),     # another keepalive
+        _FakeChunk("b"),       # would be more content but never reached
+    ]
+    fake_stream = _FakeStream(chunks)
+
+    monkeypatch.setattr(settings, "llm_read_timeout_sec", 60.0)
+    monkeypatch.setattr(settings, "llm_timeout_sec", 999999.0)
+
+    # Times: 0=baseline, 1=after first real chunk (small bump),
+    # 2=at first keepalive (small bump - no reset),
+    # 3=at second keepalive (PAST 60s idle budget — must trip).
+    times = iter([0.0, 1.0, 30.0, 999.0])
+
+    def fake_monotonic() -> float:
+        return next(times, 999.0)
+
+    monkeypatch.setattr(llm_svc.time, "monotonic", fake_monotonic)
+
+    with patch.object(llm_svc, "_client", return_value=_fake_client_returning(fake_stream)):
+        with pytest.raises(LLMStreamStalledError) as exc_info:
+            llm_svc.chat(system="sys", user="usr")
+
+    # The stall must be reported relative to the LAST REAL chunk
+    # (~1.0s mark), not the most recent keepalive — proves the timer
+    # wasn't reset by the empty keepalives.
+    assert exc_info.value.idle_seconds > 60.0
     assert fake_stream.closed is True
 
 
