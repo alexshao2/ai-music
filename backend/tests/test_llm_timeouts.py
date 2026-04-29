@@ -27,7 +27,7 @@ import pytest
 
 from app.config import settings
 from app.services import llm as llm_svc
-from app.services.llm import LLMStreamStalledError
+from app.services.llm import LLMStreamStalledError, LLMTotalBudgetExceededError
 
 
 class _FakeChunk:
@@ -106,6 +106,36 @@ def test_client_uses_granular_httpx_timeout() -> None:
     assert timeout.read == pytest.approx(settings.llm_read_timeout_sec)
     # Total budget is honoured but not used as the read timeout.
     assert timeout.read != pytest.approx(settings.llm_timeout_sec)
+
+
+def test_client_timeout_scalar_remains_meaningful() -> None:
+    """``llm_timeout_sec`` must still control at least one httpx phase.
+
+    ``httpx.Timeout`` ignores its ``timeout=`` scalar entirely when
+    ``connect``/``read``/``write``/``pool`` are ALL passed explicitly.
+    Leaving ``write`` and ``pool`` unset preserves the scalar as the
+    fallback for those phases. This test pins that contract so a future
+    refactor doesn't accidentally re-introduce all-four-explicit and
+    silently drop the total budget.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_openai_ctor(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    with patch.object(llm_svc, "OpenAI", side_effect=fake_openai_ctor):
+        llm_svc._client.cache_clear()
+        llm_svc._client()
+
+    timeout = captured["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    # Either ``write`` or ``pool`` (ideally both) must equal the
+    # scalar, proving the scalar is honoured by httpx.
+    assert (
+        timeout.write == pytest.approx(settings.llm_timeout_sec)
+        or timeout.pool == pytest.approx(settings.llm_timeout_sec)
+    )
 
 
 def test_default_timeout_values_are_sensible() -> None:
@@ -197,6 +227,50 @@ def test_chat_closes_stream_on_unexpected_exception(
         with pytest.raises(RuntimeError, match="simulated upstream crash"):
             llm_svc.chat(system="sys", user="usr")
     assert fake_stream.closed is True
+
+
+# --- Total-budget wall-clock guard ---------------------------------------
+
+
+def test_chat_raises_when_total_budget_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stream that dribbles chunks under idle_budget but past total budget.
+
+    Each chunk arrives 30s after the last (well under the 60s idle
+    guard) but the cumulative elapsed exceeds the 180s total budget.
+    The total guard must trip without ever firing the idle guard.
+    """
+    chunks = [_FakeChunk(f"piece-{i}") for i in range(20)]
+    fake_stream = _FakeStream(chunks)
+
+    monkeypatch.setattr(settings, "llm_read_timeout_sec", 60.0)
+    monkeypatch.setattr(settings, "llm_timeout_sec", 180.0)
+
+    counter = {"t": 0.0}
+
+    def fake_monotonic() -> float:
+        # Each call advances by 30s — under the idle budget, but
+        # the seventh in-loop sample crosses the total budget.
+        counter["t"] += 30.0
+        return counter["t"]
+
+    monkeypatch.setattr(llm_svc.time, "monotonic", fake_monotonic)
+
+    with patch.object(llm_svc, "_client", return_value=_fake_client_returning(fake_stream)):
+        with pytest.raises(LLMTotalBudgetExceededError) as exc_info:
+            llm_svc.chat(system="sys", user="usr")
+
+    assert exc_info.value.elapsed_seconds > 180.0
+    assert fake_stream.closed is True
+
+
+def test_total_budget_error_is_a_timeout_error() -> None:
+    """Subclassing ``TimeoutError`` lets persona retry log "timeout" cleanly."""
+    err = LLMTotalBudgetExceededError(elapsed_seconds=200.0, partial_chars=512)
+    assert isinstance(err, TimeoutError)
+    assert "200.0" in str(err)
+    assert "512" in str(err)
 
 
 # --- LLMStreamStalledError surface ---------------------------------------

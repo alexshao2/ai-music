@@ -24,10 +24,13 @@ class Settings(BaseSettings):
     # leaving the user with placeholder lyrics ("[chờ Lyricist tinh chỉnh]").
     # 4000 fits current schemas comfortably; bump via LLM_MAX_TOKENS if needed.
     llm_max_tokens: int = 4000
-    # Total per-request budget. A scalar applied to httpx as the same
-    # connect/read/write/pool timeout — the granular sub-timeouts below
-    # tighten the fail-fast behaviour for stalled connections without
-    # changing the overall ceiling for slow-but-progressing models.
+    # Total per-request budget enforced two ways:
+    # 1. As the fallback ``timeout`` for any httpx phase not explicitly
+    #    overridden below (currently ``write`` / ``pool``).
+    # 2. As an explicit wall-clock cap on the streaming loop in
+    #    :func:`app.services.llm.chat` — a model dribbling one chunk
+    #    just under ``llm_read_timeout_sec`` would otherwise stream
+    #    forever, so we raise once total elapsed exceeds this value.
     llm_timeout_sec: float = 180.0
     # TCP connect timeout. Should fail fast — if the LLM endpoint isn't
     # reachable we want the persona retry loop to substitute a stub,
