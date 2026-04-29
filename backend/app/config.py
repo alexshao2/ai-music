@@ -24,7 +24,26 @@ class Settings(BaseSettings):
     # leaving the user with placeholder lyrics ("[chờ Lyricist tinh chỉnh]").
     # 4000 fits current schemas comfortably; bump via LLM_MAX_TOKENS if needed.
     llm_max_tokens: int = 4000
+    # Total per-request budget enforced two ways:
+    # 1. As the fallback ``timeout`` for any httpx phase not explicitly
+    #    overridden below (currently ``write`` / ``pool``).
+    # 2. As an explicit wall-clock cap on the streaming loop in
+    #    :func:`app.services.llm.chat` — a model dribbling one chunk
+    #    just under ``llm_read_timeout_sec`` would otherwise stream
+    #    forever, so we raise once total elapsed exceeds this value.
     llm_timeout_sec: float = 180.0
+    # TCP connect timeout. Should fail fast — if the LLM endpoint isn't
+    # reachable we want the persona retry loop to substitute a stub,
+    # not wait 3 minutes per attempt.
+    llm_connect_timeout_sec: float = 10.0
+    # Read timeout BETWEEN STREAM CHUNKS. The OpenAI Chat Completions
+    # streaming protocol pushes a chunk every few seconds while the
+    # model is generating; if more than this many seconds pass without
+    # a chunk we treat the connection as silently dead and raise.
+    # 60s is generous for a healthy model and aggressive enough that a
+    # network drop mid-compose surfaces as a persona retry within ~1
+    # minute instead of hanging for the full ``llm_timeout_sec``.
+    llm_read_timeout_sec: float = 60.0
 
     # Embedding endpoint — separate from chat/LLM because many providers (OpenAI
     # compat routers, vLLM, Ollama, ...) expose embedding models under a
