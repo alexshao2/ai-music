@@ -970,21 +970,71 @@ def compose(brief: Brief, *, refine: bool = True) -> SongDraft:
     return _compose_stub(brief)
 
 
+def _score_with_independent_evaluator(draft: SongDraft) -> tuple[float, float, float]:
+    """Run the independent A&R evaluator and return ``(critic, indep, gate)``.
+
+    The gate score is the **average** of the Critic's overall score (which
+    the Critic LLM assigned to its own council) and the audio evaluator's
+    overall score (a separate LLM pass — or heuristic when no LLM key is
+    configured). Averaging is more lenient than ``min`` but still anchors
+    the gate to an outside opinion: the Critic alone can no longer push a
+    weak draft over the threshold.
+
+    The independent evaluation result is attached to the draft as
+    :pyattr:`SongDraft.independent_evaluation` so callers can show both
+    scores. When the evaluator fails (no LLM, network error, etc.) the
+    function falls back to the Critic-only score.
+
+    Returns ``(critic_overall, independent_overall, gate_overall)``. Any
+    component is ``0.0`` when missing.
+    """
+    from app.services import audio_evaluator  # local import — avoid cycle
+
+    critic_overall = (
+        draft.evaluation.scores.overall if draft.evaluation is not None else 0.0
+    )
+
+    try:
+        indep_eval = audio_evaluator.evaluate_draft(draft)
+    except Exception:
+        log.exception("Independent A&R evaluation failed; using Critic only")
+        return critic_overall, 0.0, critic_overall
+
+    draft.independent_evaluation = indep_eval
+    indep_overall = indep_eval.scores.overall
+
+    if draft.evaluation is None:
+        return 0.0, indep_overall, indep_overall
+
+    if abs(critic_overall - indep_overall) >= 2.0:
+        log.warning(
+            "Critic / independent A&R diverge by %.1f points "
+            "(critic=%.1f, indep=%.1f) — likely Critic over- or under-rating.",
+            abs(critic_overall - indep_overall), critic_overall, indep_overall,
+        )
+
+    gate_overall = (critic_overall + indep_overall) / 2.0
+    return critic_overall, indep_overall, gate_overall
+
+
 def compose_with_quality_gate(
     brief: Brief,
     *,
     target_score: float = 7.5,
     max_revisions: int = 2,
 ) -> SongDraft:
-    """Compose with auto-revise loop driven by Critic quality scores.
+    """Compose with auto-revise loop driven by an independent A&R scorer.
 
-    Runs ``compose()`` and inspects the Critic's ``verdict`` + ``overall``
-    score.  If below *target_score* the Critic's ``revision_brief`` is
-    appended to the brief's notes and the council re-runs (up to
-    *max_revisions* extra attempts).
+    Runs ``compose()``, then runs the independent
+    :func:`app.services.audio_evaluator.evaluate_draft` over the result so
+    the gate decision averages two separate LLM passes — the Critic
+    persona embedded in the council and a standalone A&R reviewer that
+    sees only the finished draft. Averaging removes the
+    Critic-grades-itself bias without becoming punitive when the two
+    agree.
 
-    Returns the first draft that passes the quality gate, or the best
-    draft produced if no attempt passes.
+    Returns the first draft that crosses *target_score* on the gate
+    score, or the best draft produced when no attempt passes.
     """
     best_draft: SongDraft | None = None
     best_score: float = -1.0
@@ -992,12 +1042,13 @@ def compose_with_quality_gate(
     for attempt in range(1, max_revisions + 2):
         draft = compose(brief, refine=True)
 
-        score = 0.0
+        critic_overall, indep_overall, score = _score_with_independent_evaluator(draft)
         verdict = "REVISE"
         if draft.evaluation is not None:
-            score = draft.evaluation.scores.overall
             verdict = draft.evaluation.verdict
             draft.evaluation.attempt = attempt
+        if draft.independent_evaluation is not None:
+            draft.independent_evaluation.attempt = attempt
 
         if score > best_score:
             best_draft = draft
@@ -1005,8 +1056,8 @@ def compose_with_quality_gate(
 
         if score >= target_score:
             log.info(
-                "Quality gate PASSED on attempt %d (score=%.1f, verdict=%s)",
-                attempt, score, verdict,
+                "Quality gate PASSED on attempt %d (gate=%.1f, critic=%.1f, indep=%.1f)",
+                attempt, score, critic_overall, indep_overall,
             )
             return draft
 
@@ -1014,23 +1065,31 @@ def compose_with_quality_gate(
             revision_notes = ""
             if draft.evaluation is not None:
                 revision_notes = draft.evaluation.revision_notes
+            indep_notes = ""
+            if draft.independent_evaluation is not None:
+                indep_notes = draft.independent_evaluation.revision_notes
             log.info(
-                "Quality gate REVISE on attempt %d (score=%.1f). Retrying.",
-                attempt, score,
+                "Quality gate REVISE on attempt %d (gate=%.1f, critic=%.1f, indep=%.1f, verdict=%s). Retrying.",
+                attempt, score, critic_overall, indep_overall, verdict,
             )
             brief = brief.model_copy(update={
                 "notes": (
                     f"{brief.notes or ''}\n\n"
-                    f"[HỘI ĐỒNG REVISION #{attempt}, score={score:.1f}]: "
+                    f"[HỘI ĐỒNG REVISION #{attempt}, gate={score:.1f} "
+                    f"(critic={critic_overall:.1f}, indep={indep_overall:.1f})]: "
                     f"{revision_notes}"
+                    + (f" | A&R độc lập: {indep_notes}" if indep_notes else "")
                 ).strip(),
             })
 
     assert best_draft is not None
     if best_draft.evaluation is not None:
         best_draft.evaluation.max_attempts_reached = True
+    if best_draft.independent_evaluation is not None:
+        best_draft.independent_evaluation.max_attempts_reached = True
     log.warning(
-        "Quality gate exhausted %d attempts. Best score=%.1f", max_revisions + 1, best_score,
+        "Quality gate exhausted %d attempts. Best gate score=%.1f",
+        max_revisions + 1, best_score,
     )
     return best_draft
 
@@ -1367,10 +1426,9 @@ def compose_quality_stream(
             }
             break
 
-        score = (
-            attempt_draft.evaluation.scores.overall
-            if attempt_draft.evaluation is not None
-            else 0.0
+        # Run independent A&R evaluator and combine with Critic for the gate.
+        critic_overall, indep_overall, score = _score_with_independent_evaluator(
+            attempt_draft
         )
         verdict = (
             attempt_draft.evaluation.verdict
@@ -1382,8 +1440,15 @@ def compose_quality_stream(
             if attempt_draft.evaluation is not None
             else ""
         )
+        indep_revision_notes = (
+            attempt_draft.independent_evaluation.revision_notes
+            if attempt_draft.independent_evaluation is not None
+            else ""
+        )
         if attempt_draft.evaluation is not None:
             attempt_draft.evaluation.attempt = attempt
+        if attempt_draft.independent_evaluation is not None:
+            attempt_draft.independent_evaluation.attempt = attempt
 
         if score > best_score:
             best_draft = attempt_draft
@@ -1395,30 +1460,46 @@ def compose_quality_stream(
             "type": "revision_completed",
             "attempt": attempt,
             "score": score,
+            "critic_score": critic_overall,
+            "independent_score": indep_overall,
             "verdict": verdict,
             "passed": passed,
             "revision_brief": revision_brief_text,
+            "independent_revision_notes": indep_revision_notes,
         }
 
         if passed:
-            log.info("Quality gate PASSED on attempt %d (score=%.1f)", attempt, score)
+            log.info(
+                "Quality gate PASSED on attempt %d (gate=%.1f, critic=%.1f, indep=%.1f)",
+                attempt, score, critic_overall, indep_overall,
+            )
             break
         if attempt >= max_attempts:
             log.warning(
-                "Quality gate exhausted %d attempts. Best score=%.1f",
+                "Quality gate exhausted %d attempts. Best gate score=%.1f",
                 max_attempts, best_score,
             )
             if best_draft is not None and best_draft.evaluation is not None:
                 best_draft.evaluation.max_attempts_reached = True
+            if best_draft is not None and best_draft.independent_evaluation is not None:
+                best_draft.independent_evaluation.max_attempts_reached = True
             break
 
-        # Feed Critic's revision_brief back into the next attempt's brief so
-        # personas see exactly which gaps to close.
+        # Feed Critic's revision_brief AND the independent A&R notes back into
+        # the next attempt's brief so personas see exactly which gaps to close.
+        combined_brief_text = revision_brief_text
+        if indep_revision_notes:
+            combined_brief_text = (
+                f"{revision_brief_text} | A&R độc lập: {indep_revision_notes}"
+                if revision_brief_text
+                else f"A&R độc lập: {indep_revision_notes}"
+            )
         current_brief = current_brief.model_copy(update={
             "notes": (
                 f"{current_brief.notes or ''}\n\n"
-                f"[HỘI ĐỒNG REVISION #{attempt}, score={score:.1f}]: "
-                f"{revision_brief_text}"
+                f"[HỘI ĐỒNG REVISION #{attempt}, gate={score:.1f} "
+                f"(critic={critic_overall:.1f}, indep={indep_overall:.1f})]: "
+                f"{combined_brief_text}"
             ).strip(),
         })
 
