@@ -11,12 +11,15 @@ The endpoint, key, and model are read from environment variables:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
+import time
 from functools import lru_cache
 from typing import Any
 
+import httpx
 from openai import OpenAI
 
 from app.config import settings
@@ -26,6 +29,27 @@ log = logging.getLogger(__name__)
 
 class LLMUnavailableError(RuntimeError):
     """Raised when callers ask for an LLM completion but no key is configured."""
+
+
+class LLMStreamStalledError(TimeoutError):
+    """Raised when the streaming LLM connection sends nothing for a while.
+
+    Distinct from :class:`httpx.ReadTimeout` because we want the persona
+    retry loop in ``council.py`` to surface this as a stalled-stream
+    diagnostic ("network seems silent") rather than a generic timeout.
+    Both are caught by the bare ``except Exception`` in
+    ``_run_persona_with_retry`` so retry behaviour is identical — this
+    is purely about logging clarity.
+    """
+
+    def __init__(self, idle_seconds: float, partial_chars: int) -> None:
+        super().__init__(
+            f"LLM stream silent for {idle_seconds:.1f}s "
+            f"(received {partial_chars} chars before stall). "
+            "Network or upstream LLM may be hung; retrying."
+        )
+        self.idle_seconds = idle_seconds
+        self.partial_chars = partial_chars
 
 
 class LLMResponseTruncatedError(ValueError):
@@ -51,10 +75,25 @@ def _client() -> OpenAI:
         raise LLMUnavailableError(
             "No LLM key configured. Set LLM_API_KEY (and LLM_BASE_URL) or OPENAI_API_KEY."
         )
+    # Use granular httpx.Timeout so a stalled TCP connection fails fast
+    # instead of waiting the full ``llm_timeout_sec`` (180s by default).
+    # ``connect``/``write``/``pool`` are short — the LLM endpoint is
+    # either reachable in seconds or we want to retry. ``read`` is the
+    # ceiling for a single httpx read syscall; we additionally enforce
+    # a per-chunk wall-clock idle budget in the streaming loop below
+    # because a misbehaving proxy can keep the TCP connection alive
+    # while sending nothing.
+    timeout = httpx.Timeout(
+        timeout=settings.llm_timeout_sec,
+        connect=settings.llm_connect_timeout_sec,
+        read=settings.llm_read_timeout_sec,
+        write=settings.llm_connect_timeout_sec,
+        pool=settings.llm_connect_timeout_sec,
+    )
     return OpenAI(
         api_key=settings.effective_api_key,
         base_url=settings.effective_base_url,
-        timeout=settings.llm_timeout_sec,
+        timeout=timeout,
         # Some OpenAI-compatible proxies (Cloudflare-fronted ones in particular)
         # block the SDK's default ``OpenAI/Python`` UA. Pin a plain UA + drop the
         # vendor-specific x-stainless-* headers so the proxy treats us like curl.
@@ -95,20 +134,45 @@ def chat(
     kwargs["stream"] = True
     parts: list[str] = []
     finish_reason: str | None = None
+    idle_budget = float(settings.llm_read_timeout_sec)
     stream = client.chat.completions.create(**kwargs)
-    for chunk in stream:
-        if not chunk.choices:
-            continue
-        choice = chunk.choices[0]
-        delta = choice.delta
-        piece = getattr(delta, "content", None)
-        if piece:
-            parts.append(piece)
-        # OpenAI-compat streams surface the final stop reason only on the last
-        # chunk; everything before it is None. Keep the last non-None value.
-        this_reason = getattr(choice, "finish_reason", None)
-        if this_reason:
-            finish_reason = this_reason
+    last_chunk_at = time.monotonic()
+    try:
+        for chunk in stream:
+            now = time.monotonic()
+            # Wall-clock guard: even if httpx hasn't surfaced a read
+            # timeout (e.g. proxy keeping the TCP connection warm with
+            # zero-length frames), refuse to wait forever for actual
+            # content. The persona retry loop will substitute a stub or
+            # rerun the call.
+            if now - last_chunk_at > idle_budget:
+                idle_for = now - last_chunk_at
+                with contextlib.suppress(Exception):
+                    stream.response.close()  # type: ignore[attr-defined]
+                raise LLMStreamStalledError(
+                    idle_seconds=idle_for,
+                    partial_chars=sum(len(p) for p in parts),
+                )
+            last_chunk_at = now
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            delta = choice.delta
+            piece = getattr(delta, "content", None)
+            if piece:
+                parts.append(piece)
+            # OpenAI-compat streams surface the final stop reason only on the
+            # last chunk; everything before it is None. Keep the last non-None.
+            this_reason = getattr(choice, "finish_reason", None)
+            if this_reason:
+                finish_reason = this_reason
+    finally:
+        # Ensure the underlying HTTP response is released even if the
+        # iterator raised mid-flight; the openai sdk's stream wraps a
+        # context manager, but we acquired it with ``create()`` so we
+        # close it ourselves to avoid leaking sockets on error paths.
+        with contextlib.suppress(Exception):
+            stream.response.close()  # type: ignore[attr-defined]
     text = _strip_reasoning("".join(parts).strip())
     if finish_reason == "length":
         # Truncation is almost always catastrophic for JSON callers. Surface it
